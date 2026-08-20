@@ -2,33 +2,60 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
-const on = (ch, cb) => ipcRenderer.on(ch, (_e, ...a) => cb(...a));
+const call = async (channel, ...args) => {
+  const result = await ipcRenderer.invoke(channel, ...args);
+  if (!result?.ok) throw new Error(result?.error || 'Request failed');
+  return result.data;
+};
 
-contextBridge.exposeInMainWorld('api', {
-  minimize: () => ipcRenderer.send('win-minimize'),
-  close: () => ipcRenderer.send('win-close'),
-  appVersion: () => ipcRenderer.invoke('app-version'),
-  openExternal: url => ipcRenderer.send('open-external', url),
-  on: (event, cb) => on(event, cb),
-  runSpoofer: data => ipcRenderer.send('run-spoofer', data),
-  pauseSpoofer: () => ipcRenderer.send('spoofer-pause'),
-  resumeSpoofer: () => ipcRenderer.send('spoofer-resume'),
-  stopSpoofer: () => ipcRenderer.send('spoofer-stop'),
-  fetchUserInfo: cookie => ipcRenderer.invoke('fetch-user-info', { cookie }),
-  fetchUserGroups: cookie => ipcRenderer.invoke('fetch-user-groups', { cookie }),
-  canUploadGroup: (cookie, groupId, apiKey) =>
-    ipcRenderer.invoke('can-upload-group', { cookie, groupId, apiKey }),
-  selectFolder: () => ipcRenderer.invoke('select-folder'),
-  pluginStatus: () => ipcRenderer.invoke('plugin-status'),
-  pluginUpdateStatus: () => ipcRenderer.invoke('plugin-update-status'),
-  installPlugin: () => ipcRenderer.invoke('install-plugin'),
-  openPluginsFolder: () => ipcRenderer.send('open-plugins-folder'),
-  checkUpdates: () => ipcRenderer.invoke('check-updates'),
-  clearHistory: () => ipcRenderer.invoke('clear-history'),
-  uninstall: () => ipcRenderer.invoke('uninstall'),
-  fetchUpdateInfo: () => ipcRenderer.invoke('fetch-update-info'),
-  downloadUpdate: () => ipcRenderer.send('download-update'),
-  applyUpdate: () => ipcRenderer.invoke('apply-update'),
-  onUpdateProgress: cb => on('update-progress', cb),
-  onUpdateDone: cb => on('update-done', cb),
+const listen = (channel, handler) => {
+  const wrapped = (_event, payload) => handler(payload);
+  ipcRenderer.on(channel, wrapped);
+  return () => ipcRenderer.off(channel, wrapped);
+};
+
+contextBridge.exposeInMainWorld('jspoofer', {
+  window: {
+    minimize: () => ipcRenderer.send('window:minimize'),
+    close: () => ipcRenderer.send('window:close'),
+  },
+  app: {
+    version: () => call('app:version'),
+    openExternal: url => ipcRenderer.send('app:openExternal', url),
+    uninstall: () => call('app:uninstall'),
+    setTheme: theme => ipcRenderer.send('app:theme', theme),
+    selectFolder: () => call('app:selectFolder'),
+  },
+  auth: {
+    list: () => call('auth:list'),
+    signIn: (cookie, apiKey) => call('auth:signIn', cookie, apiKey),
+    switch: id => call('auth:switch', id),
+    remove: id => call('auth:remove', id),
+    signOut: () => call('auth:signOut'),
+    groups: () => call('auth:groups'),
+    checkGroup: groupId => call('auth:checkGroup', groupId),
+  },
+  plugin: {
+    status: () => call('plugin:status'),
+    updateStatus: () => call('plugin:updateStatus'),
+    install: () => call('plugin:install'),
+    reveal: () => call('plugin:reveal'),
+  },
+  run: {
+    start: options => call('run:start', options),
+    pause: () => ipcRenderer.send('run:pause'),
+    resume: () => ipcRenderer.send('run:resume'),
+    stop: () => ipcRenderer.send('run:stop'),
+  },
+  history: {
+    runs: () => call('history:runs'),
+    clearRuns: () => call('history:clearRuns'),
+    clearMappings: () => call('history:clearMappings'),
+  },
+  updates: {
+    check: () => call('update:check'),
+    download: () => call('update:download'),
+    apply: () => call('update:apply'),
+  },
+  on: listen,
 });

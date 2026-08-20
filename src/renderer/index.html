@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' https://cdn.tailwindcss.com https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'none'; form-action 'none'; base-uri 'none'"
+    />
+    <title>jSpoofer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="theme.js"></script>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <script type="module" src="app.js"></script>
+
+    <style type="text/tailwindcss">
+      @layer components {
+        .surface {
+          @apply border border-paper-line bg-paper-card dark:border-night-line dark:bg-night-card;
+        }
+        .card {
+          @apply surface rounded p-3.5;
+        }
+        .section-label {
+          @apply text-[10px] font-semibold uppercase tracking-[0.09em] text-ink-faint;
+        }
+        .hint {
+          @apply text-[11px] leading-relaxed text-ink-faint;
+        }
+        .field {
+          @apply w-full rounded border border-paper-line bg-paper px-2.5 py-[7px] text-[12px]
+            outline-none transition-[border-color,box-shadow] placeholder:text-ink-faint
+            focus:border-brand focus:ring-2 focus:ring-brand/25
+            dark:border-night-line dark:bg-night dark:text-night-text;
+        }
+        .btn {
+          @apply inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded px-3 py-[7px]
+            text-[12px] font-medium transition
+            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/50
+            disabled:cursor-not-allowed disabled:opacity-45;
+        }
+        .btn-primary {
+          @apply bg-brand text-white transition-colors hover:bg-brand-deep;
+        }
+        .btn-quiet {
+          @apply border border-paper-line text-ink-soft hover:bg-paper hover:text-ink
+            dark:border-night-line dark:text-ink-faint dark:hover:bg-night dark:hover:text-night-text;
+        }
+        .btn-destructive {
+          @apply border border-red-300/70 text-red-600 hover:bg-red-50
+            dark:border-red-900/70 dark:text-red-400 dark:hover:bg-red-950/40;
+        }
+        .btn-ghost {
+          @apply grid h-7 w-7 place-items-center rounded text-ink-faint transition
+            hover:bg-paper hover:text-ink focus-visible:outline-none focus-visible:ring-2
+            focus-visible:ring-brand/50 dark:hover:bg-night dark:hover:text-night-text;
+        }
+        .nav-item {
+          @apply flex items-center gap-2.5 rounded px-2.5 py-[7px] text-left text-[12.5px]
+            text-ink-soft transition hover:bg-paper hover:text-ink
+            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/50
+            dark:text-ink-faint dark:hover:bg-night dark:hover:text-night-text;
+        }
+        .nav-item[aria-current='page'] {
+          @apply bg-brand-tint font-medium text-brand dark:bg-brand-shade dark:text-white;
+        }
+        .tab {
+          @apply rounded px-2 py-1 text-[11px] font-medium text-ink-faint transition
+            hover:text-ink focus-visible:outline-none focus-visible:ring-2
+            focus-visible:ring-brand/50 dark:hover:text-night-text;
+        }
+        .tab[aria-selected='true'] {
+          @apply bg-brand-tint text-brand dark:bg-brand-shade dark:text-white;
+        }
+        .switch {
+          @apply relative h-[18px] w-8 shrink-0 rounded-full bg-ink-faint/40 transition
+            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/50;
+        }
+        .switch::after {
+          @apply absolute left-[2px] top-[2px] h-[14px] w-[14px] rounded-full bg-white transition;
+          content: '';
+        }
+        .switch[aria-checked='true'] {
+          @apply bg-brand;
+        }
+        .switch[aria-checked='true']::after {
+          @apply translate-x-[14px];
+        }
+        .option {
+          @apply flex items-start justify-between gap-5 py-2;
+        }
+        .option-name {
+          @apply text-[12.5px] text-ink dark:text-night-text;
+        }
+        .terminal {
+          @apply h-[214px] overflow-y-auto rounded border border-paper-line bg-terminal px-3 py-2.5
+            text-[11.5px] leading-[1.75] text-zinc-300 dark:border-night-line;
+        }
+        .modal {
+          @apply w-[352px] rounded-lg border border-paper-line bg-paper-card p-5 text-ink shadow-2xl
+            backdrop:bg-black/55 dark:border-night-line dark:bg-night-card dark:text-night-text;
+        }
+        .avatar {
+          @apply shrink-0 rounded-full bg-paper object-cover dark:bg-night;
+        }
+        .lucide {
+          @apply h-[14px] w-[14px] shrink-0;
+          stroke-width: 1.75;
+        }
+      }
+      ::-webkit-scrollbar {
+        width: 7px;
+        height: 7px;
+      }
+      ::-webkit-scrollbar-thumb {
+        @apply rounded-full bg-ink-faint/30;
+      }
+    </style>
+  </head>
+
+  <body
+    class="flex h-screen select-none flex-col overflow-hidden bg-paper font-sans text-[13px] text-ink antialiased dark:bg-night dark:text-night-text"
+  >
+    <header
+      class="flex h-[38px] shrink-0 items-center justify-between border-b border-paper-line bg-paper-card pl-3 pr-1 dark:border-night-line dark:bg-night-card [-webkit-app-region:drag]"
+    >
+      <div class="flex items-center gap-2">
+        <img src="../../assets/logo.png" alt="" class="h-[17px] w-[17px]" />
+        <span class="text-[12.5px] font-semibold tracking-tight">jSpoofer</span>
+        <span
+          class="rounded bg-paper px-1.5 py-px font-mono text-[10px] text-ink-faint dark:bg-night"
+          id="version"
+        ></span>
+      </div>
+      <div class="flex items-center [-webkit-app-region:no-drag]">
+        <button class="btn-ghost h-7 w-9" id="btnMinimize" aria-label="Minimize window">
+          <i data-lucide="minus"></i>
+        </button>
+        <button
+          class="btn-ghost h-7 w-9 hover:!bg-red-500 hover:!text-white"
+          id="btnClose"
+          aria-label="Close jSpoofer"
+        >
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+    </header>
+
+    <div class="flex min-h-0 flex-1">
+      <nav
+        class="flex w-[168px] shrink-0 flex-col gap-0.5 border-r border-paper-line bg-paper-card p-2 dark:border-night-line dark:bg-night-card"
+        aria-label="Sections"
+      >
+        <button class="nav-item" data-page="home" aria-current="page">
+          <i data-lucide="play-circle"></i><span data-t="nav.home"></span>
+        </button>
+        <button class="nav-item" data-page="history">
+          <i data-lucide="clock"></i><span data-t="nav.history"></span>
+        </button>
+        <button class="nav-item" data-page="settings">
+          <i data-lucide="sliders-horizontal"></i><span data-t="nav.settings"></span>
+        </button>
+
+        <div class="flex-1"></div>
+
+        <button
+          class="flex w-full items-center gap-2.5 rounded px-2 py-2 text-left transition hover:bg-paper focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 dark:hover:bg-night"
+          id="btnAccount"
+        >
+          <img
+            src="../../assets/logo.png"
+            alt=""
+            class="avatar h-[26px] w-[26px]"
+            id="accountAvatar"
+          />
+          <span class="min-w-0 flex-1">
+            <span class="block truncate text-[11.5px] font-medium" id="accountName"></span>
+            <span class="block truncate text-[10.5px] text-ink-faint" id="accountHandle"></span>
+          </span>
+          <i data-lucide="chevrons-up-down" class="text-ink-faint"></i>
+        </button>
+      </nav>
+
+      <main class="flex-1 overflow-y-auto p-3.5">
+        <section class="flex flex-col gap-3" id="page-home">
+          <div
+            class="flex items-center gap-2.5 rounded surface px-3 py-2 text-[12px]"
+            id="studioStrip"
+          >
+            <span
+              class="h-[7px] w-[7px] shrink-0 rounded-full bg-ink-faint/50"
+              id="studioDot"
+            ></span>
+            <span class="flex-1 truncate text-ink-soft dark:text-ink-faint" id="studioText"></span>
+            <button class="btn btn-quiet hidden !py-1 !text-[11px]" id="btnScanSelected">
+              <i data-lucide="mouse-pointer-click"></i><span id="selectionText"></span>
+            </button>
+          </div>
+
+          <div class="hidden" id="nextStep"></div>
+
+          <div class="card">
+            <div class="mb-2.5 flex items-center justify-between">
+              <div class="flex gap-1" role="tablist">
+                <button
+                  class="tab"
+                  id="tabQueue"
+                  role="tab"
+                  aria-selected="true"
+                  data-t="home.queue"
+                ></button>
+                <button
+                  class="tab"
+                  id="tabLog"
+                  role="tab"
+                  aria-selected="false"
+                  data-t="home.log"
+                ></button>
+              </div>
+              <div class="flex gap-0.5">
+                <button class="btn-ghost" id="btnCopyLog" data-t-title="home.copyLog">
+                  <i data-lucide="clipboard-copy"></i>
+                </button>
+                <button class="btn-ghost" id="btnExportLog" data-t-title="home.exportLog">
+                  <i data-lucide="file-down"></i>
+                </button>
+                <button
+                  class="btn-ghost hidden"
+                  id="btnExportMappings"
+                  data-t-title="home.exportMappings"
+                >
+                  <i data-lucide="file-json-2"></i>
+                </button>
+              </div>
+            </div>
+
+            <div class="terminal" id="queueView" role="tabpanel"></div>
+            <div
+              class="terminal hidden whitespace-pre-wrap break-words font-mono"
+              id="logView"
+              role="tabpanel"
+            ></div>
+
+            <div class="mt-3 flex items-center gap-2">
+              <label class="sr-only" for="groupSelect" data-t="home.uploadTarget"></label>
+              <select class="field flex-1 appearance-none" id="groupSelect"></select>
+              <button class="btn btn-primary min-w-[150px]" id="btnRun">
+                <i data-lucide="play"></i><span data-t="home.run"></span>
+              </button>
+              <button class="btn btn-quiet hidden !px-2.5" id="btnPause" data-t-title="home.pause">
+                <i data-lucide="pause"></i>
+              </button>
+              <button
+                class="btn btn-destructive hidden !px-2.5"
+                id="btnStop"
+                data-t-title="home.stop"
+              >
+                <i data-lucide="square"></i>
+              </button>
+            </div>
+            <p class="mt-2 hidden text-[11.5px] text-red-500" id="groupWarning" role="alert"></p>
+          </div>
+        </section>
+
+        <section class="hidden flex-col gap-3" id="page-history">
+          <div class="card">
+            <div class="mb-3 flex items-center justify-between">
+              <h2 class="section-label" data-t="history.title"></h2>
+              <button class="btn-ghost" id="btnClearRuns" data-t-title="history.clear">
+                <i data-lucide="trash-2"></i>
+              </button>
+            </div>
+            <div class="flex flex-col gap-1.5" id="runList"></div>
+          </div>
+        </section>
+
+        <section class="hidden flex-col gap-3" id="page-settings">
+          <div class="card">
+            <h2 class="section-label" data-t="plugin.title"></h2>
+            <p class="hint mb-3 mt-1" data-t="plugin.desc"></p>
+            <div class="mb-2.5 hidden rounded px-2.5 py-2 text-[11.5px]" id="pluginNotice"></div>
+            <div class="flex gap-2">
+              <button class="btn btn-primary flex-1" id="btnInstallPlugin"></button>
+              <button
+                class="btn btn-quiet !px-2.5"
+                id="btnRevealPlugin"
+                data-t-title="plugin.reveal"
+              >
+                <i data-lucide="folder-open"></i>
+              </button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2 class="section-label mb-1" data-t="options.title"></h2>
+            <div class="divide-y divide-paper-line dark:divide-night-line">
+              <div class="option">
+                <div>
+                  <p class="option-name" id="labelDownloadOnly" data-t="options.downloadOnly"></p>
+                  <p class="hint" data-t="options.downloadOnlyDesc"></p>
+                </div>
+                <button
+                  class="switch"
+                  id="togDownloadOnly"
+                  role="switch"
+                  aria-checked="false"
+                  aria-labelledby="labelDownloadOnly"
+                ></button>
+              </div>
+              <div class="hidden gap-2 py-2" id="folderRow">
+                <label class="sr-only" for="downloadFolder" data-t="options.folder"></label>
+                <input
+                  class="field flex-1"
+                  id="downloadFolder"
+                  readonly
+                  data-t-placeholder="options.selectFolder"
+                />
+                <button class="btn btn-quiet" id="btnSelectFolder" data-t="options.browse"></button>
+              </div>
+              <div class="option">
+                <div>
+                  <p class="option-name" id="labelAutoName" data-t="options.autoName"></p>
+                  <p class="hint" data-t="options.autoNameDesc"></p>
+                </div>
+                <button
+                  class="switch"
+                  id="togAutoName"
+                  role="switch"
+                  aria-checked="false"
+                  aria-labelledby="labelAutoName"
+                ></button>
+              </div>
+              <div class="option">
+                <div>
+                  <p class="option-name" id="labelForce" data-t="options.forceReupload"></p>
+                  <p class="hint" data-t="options.forceReuploadDesc"></p>
+                </div>
+                <button
+                  class="switch"
+                  id="togForceReupload"
+                  role="switch"
+                  aria-checked="false"
+                  aria-labelledby="labelForce"
+                ></button>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2 class="section-label mb-3" data-t="tuning.title"></h2>
+            <div class="grid grid-cols-2 gap-x-4 gap-y-3">
+              <div>
+                <label class="section-label mb-1.5 block" for="uploadConcurrency">
+                  <span data-t="tuning.upload"></span> ·
+                  <span class="font-mono" id="uploadConcurrencyValue"></span>
+                </label>
+                <input
+                  type="range"
+                  class="w-full accent-brand"
+                  id="uploadConcurrency"
+                  min="1"
+                  max="25"
+                />
+              </div>
+              <div>
+                <label class="section-label mb-1.5 block" for="downloadConcurrency">
+                  <span data-t="tuning.download"></span> ·
+                  <span class="font-mono" id="downloadConcurrencyValue"></span>
+                </label>
+                <input
+                  type="range"
+                  class="w-full accent-brand"
+                  id="downloadConcurrency"
+                  min="1"
+                  max="25"
+                />
+              </div>
+              <div>
+                <label
+                  class="section-label mb-1.5 block"
+                  for="maxPlaceIds"
+                  data-t="tuning.maxPlaceIds"
+                ></label>
+                <input class="field" type="number" id="maxPlaceIds" min="1" max="50" />
+              </div>
+              <div>
+                <label
+                  class="section-label mb-1.5 block"
+                  for="uploadRetries"
+                  data-t="tuning.uploadRetries"
+                ></label>
+                <input class="field" type="number" id="uploadRetries" min="1" max="10" />
+              </div>
+              <div class="col-span-2">
+                <label
+                  class="section-label mb-1.5 block"
+                  for="overridePlaceId"
+                  data-t="tuning.overridePlaceId"
+                ></label>
+                <input
+                  class="field"
+                  id="overridePlaceId"
+                  inputmode="numeric"
+                  data-t-placeholder="tuning.overridePlaceholder"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2 class="section-label mb-1" data-t="app.title"></h2>
+            <div class="divide-y divide-paper-line dark:divide-night-line">
+              <div class="option">
+                <div>
+                  <p class="option-name" id="labelTheme" data-t="app.theme"></p>
+                  <p class="hint" data-t="app.themeDesc"></p>
+                </div>
+                <button
+                  class="switch"
+                  id="togTheme"
+                  role="switch"
+                  aria-checked="true"
+                  aria-labelledby="labelTheme"
+                ></button>
+              </div>
+              <div class="option">
+                <div>
+                  <p class="option-name" id="labelLanguage" data-t="app.language"></p>
+                  <p class="hint" data-t="app.languageDesc"></p>
+                </div>
+                <select
+                  class="field w-auto appearance-none"
+                  id="languageSelect"
+                  aria-labelledby="labelLanguage"
+                >
+                  <option value="en">English</option>
+                  <option value="pt">Português</option>
+                  <option value="es">Español</option>
+                </select>
+              </div>
+            </div>
+            <div class="mt-3 grid grid-cols-2 gap-2">
+              <button class="btn btn-quiet" id="btnCheckUpdate">
+                <i data-lucide="arrow-up-circle"></i><span data-t="app.checkUpdate"></span>
+              </button>
+              <button class="btn btn-quiet" id="btnClearCache">
+                <i data-lucide="eraser"></i><span data-t="app.clearCache"></span>
+              </button>
+              <button class="btn btn-quiet" id="btnResetSettings">
+                <i data-lucide="rotate-ccw"></i><span data-t="app.resetSettings"></span>
+              </button>
+              <button class="btn btn-destructive" id="btnUninstall">
+                <i data-lucide="trash-2"></i><span data-t="app.uninstall"></span>
+              </button>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <footer
+      class="relative flex h-[30px] shrink-0 items-center gap-2 overflow-hidden border-t border-paper-line bg-paper-card px-3.5 dark:border-night-line dark:bg-night-card"
+    >
+      <div
+        class="absolute inset-y-0 left-0 w-0 bg-brand/10 transition-[width] duration-300"
+        id="statusFill"
+      ></div>
+      <span
+        class="relative h-[7px] w-[7px] shrink-0 rounded-full bg-ink-faint/50"
+        id="statusDot"
+      ></span>
+      <span
+        class="relative flex-1 truncate text-[11px] text-ink-soft dark:text-ink-faint"
+        id="statusText"
+        aria-live="polite"
+      ></span>
+      <span class="relative hidden font-mono text-[10px] text-ink-faint" id="statusCount"></span>
+    </footer>
+
+    <dialog class="modal" id="accountsModal">
+      <div class="mb-4 flex items-center justify-between">
+        <h2 class="text-[13.5px] font-semibold" data-t="accounts.title"></h2>
+        <button class="btn-ghost" id="btnCloseAccounts" data-t-title="action.close">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+
+      <div
+        class="hidden items-center gap-3 rounded border border-paper-line bg-paper p-3 dark:border-night-line dark:bg-night"
+        id="activeAccount"
+      >
+        <img src="../../assets/logo.png" alt="" class="avatar h-10 w-10" id="profileAvatar" />
+        <div class="min-w-0 flex-1">
+          <p class="truncate text-[13px] font-semibold" id="profileName"></p>
+          <p class="truncate text-[11px] text-ink-faint" id="profileHandle"></p>
+          <p class="truncate font-mono text-[10px] text-ink-faint" id="profileKeyState"></p>
+        </div>
+        <button class="btn btn-quiet !px-2.5" id="btnSignOut" data-t-title="accounts.signOut">
+          <i data-lucide="log-out"></i>
+        </button>
+      </div>
+
+      <div class="mt-3 hidden" id="savedAccounts">
+        <p class="section-label mb-1.5" data-t="accounts.switchTo"></p>
+        <div class="flex max-h-[168px] flex-col gap-0.5 overflow-y-auto" id="accountList"></div>
+      </div>
+
+      <div class="mt-4 border-t border-paper-line pt-4 dark:border-night-line">
+        <p class="section-label mb-2" id="authHeading"></p>
+        <div class="flex flex-col gap-2">
+          <div>
+            <label class="sr-only" for="authCookie" data-t="accounts.cookie"></label>
+            <input
+              class="field"
+              type="password"
+              id="authCookie"
+              autocomplete="off"
+              placeholder=".ROBLOSECURITY"
+            />
+          </div>
+          <div class="flex gap-2">
+            <label class="sr-only" for="authApiKey" data-t="accounts.apiKey"></label>
+            <input
+              class="field flex-1"
+              type="password"
+              id="authApiKey"
+              autocomplete="off"
+              data-t-placeholder="accounts.apiKeyHint"
+            />
+            <button class="btn btn-quiet" id="btnGetKey" data-t="accounts.getKey"></button>
+          </div>
+          <p class="hidden text-[11.5px] text-red-500" id="authError" role="alert"></p>
+          <button class="btn btn-primary" id="btnSignIn"></button>
+          <p class="hint" data-t="accounts.storage"></p>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog class="modal" id="uninstallModal">
+      <h2 class="text-[13.5px] font-semibold" data-t="uninstall.title"></h2>
+      <p class="hint mt-1.5" data-t="uninstall.desc"></p>
+      <div class="mt-4 flex gap-2">
+        <button
+          class="btn btn-destructive flex-1"
+          id="btnConfirmUninstall"
+          data-t="uninstall.confirm"
+        ></button>
+        <button
+          class="btn btn-quiet flex-1"
+          id="btnCancelUninstall"
+          data-t="action.cancel"
+        ></button>
+      </div>
+    </dialog>
+
+    <dialog class="modal" id="updateModal">
+      <h2 class="text-[13.5px] font-semibold" id="updateTitle"></h2>
+      <p class="hint mt-1" id="updateSubtitle"></p>
+      <div class="my-4 h-1.5 overflow-hidden rounded-full bg-paper dark:bg-night">
+        <div class="h-full w-0 bg-brand transition-[width]" id="updateBar"></div>
+      </div>
+      <div class="mb-4 flex justify-between font-mono text-[10px] text-ink-faint">
+        <span id="updateSpeed"></span>
+        <span id="updatePercent">0%</span>
+      </div>
+      <div class="flex gap-2" id="updateActions">
+        <button
+          class="btn btn-primary flex-1"
+          id="btnDownloadUpdate"
+          data-t="update.download"
+        ></button>
+        <button class="btn btn-quiet flex-1" id="btnCloseUpdate" data-t="action.cancel"></button>
+      </div>
+      <button
+        class="btn btn-primary hidden w-full"
+        id="btnInstallUpdate"
+        data-t="update.install"
+      ></button>
+    </dialog>
+  </body>
+</html>

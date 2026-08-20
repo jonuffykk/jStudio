@@ -1,5 +1,62 @@
 # Changelog
 
+## v2.0.0
+
+Everything from v1.7.0 onward, rolled into one release. The project was renamed, the codebase was rewritten, and credentials no longer sit in plain text.
+
+### Renamed to jSpoofer
+
+- The app, window title, appId, build artifacts, Studio plugin and repo are all `jSpoofer` now. The old name is gone from the code.
+- Coming from an older install, nothing is lost: settings, saved credentials, the ID cache and run history are all migrated on first launch, and the updater still checks the old `JonuffySpoofer` repo if the new one has no release yet.
+- Uninstall and plugin detection recognise both the old and new plugin filenames, so upgrading doesn't leave orphaned files or a false "not installed".
+
+### Credentials
+
+- Your cookie and API key moved out of `localStorage` into a vault encrypted by the operating system. The interface only ever receives your name, avatar and whether a key is saved — the cookie never crosses into the page again.
+- Signing out erases the file instead of flipping a flag.
+- Multiple accounts, switched from the account modal. Signing in registers the account by its Roblox ID, so there's no naming step.
+
+### Studio
+
+- The plugin reports your selection as you make it, and a **Scan Selected** button appears next to the connection line when there's something to scan. There's no setting to remember any more.
+- ID replacement runs inside a single `ChangeHistoryService` recording, so one Ctrl+Z undoes a whole pass.
+- The plugin announces a clean disconnect when unloaded rather than waiting for the heartbeat to lapse.
+- The local bridge refuses requests that carry `Origin` or `Sec-Fetch-Site`, which only browsers send. Before this, an open web page could have driven a scan or a replace on your place.
+
+### Running
+
+- Live queue with per-animation status, plus the raw log one click away. Both export to JSON, along with the old → new ID map.
+- The run screen names the one thing standing between you and a working run — sign in, install the plugin, open Studio, pick a folder — with a button that does it.
+- Failed downloads and uploads get one more pass at the end of a run before the summary.
+- Place ID lookups are cached per creator and reused by the retry pass instead of being re-fetched per asset.
+- Rate limits are handled with a visible countdown rather than a silent stall.
+- Run history keeps the last 30 runs with target, duration, counts and outcome.
+- Ctrl/Cmd+Enter starts a run, Esc stops it.
+
+### Options
+
+- **Auto-Name Animations** uses the instance or script variable name (`Idle`, `Sprint`) instead of the marketplace title. Off by default.
+- **Force Re-upload** ignores ownership and the ID cache. Off by default.
+- **Download only** saves the `.rbxm` files to a folder and skips uploading.
+- Concurrency, upload retries and a Place ID override live under Tuning.
+- Removed: the Enable Spoofing toggle (Download Only already says it), the Selected Only toggle (detection replaced it), and the Max Retries / Retry Delay fields, which only restated defaults.
+- Audio spoofing was tried and dropped — Open Cloud's upload contract differs enough that it needs its own handling. jSpoofer is animation-only.
+
+### Interface
+
+- New look: violet accent, the system's own typeface, flat surfaces, monospace for IDs and logs.
+- Light and dark themes now apply from the splash screen onward instead of flashing dark first, and the splash stays up long enough to read.
+- English, Português and Español, detected from the OS on first launch.
+- Toggles are real switches for screen readers, every icon button is labelled, and the status bar announces changes.
+
+### Under the hood
+
+- The main process is split by responsibility — the Studio bridge, the run pipeline, the Roblox client, storage, updates — instead of one file holding both the IPC layer and the pipeline.
+- Log events are structured objects rather than delimited strings the interface had to pull apart.
+- Updates are verified against the release checksum and rejected if they don't match.
+- Tests cover the pure helpers and the Studio bridge end to end.
+- Contribution docs, issue and PR templates, `SECURITY.md` and an `.editorconfig` for anyone sending a patch.
+
 ## v1.6.2
 
 - Fixed every run failing instantly with "Cannot access 'abortSignal' before initialization", introduced in 1.6.1 by declaring the abort signal after the download options that consume it

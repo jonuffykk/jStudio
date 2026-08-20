@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self'"
+    />
+    <title>jSpoofer</title>
+    <style>
+      :root {
+        --bg: #ffffff;
+        --line: #e6e6ea;
+        --text: #16161d;
+        --faint: #8d8d9e;
+        --brand: #7048e8;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #16161d;
+          --line: #24242e;
+          --text: #e8e8ef;
+          --faint: #6f7482;
+        }
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+      }
+      .card {
+        display: flex;
+        height: 100%;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+        -webkit-app-region: drag;
+      }
+      img {
+        width: 52px;
+        height: 52px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .track {
+        width: 96px;
+        height: 2px;
+        overflow: hidden;
+        border-radius: 2px;
+        background: var(--faint);
+        opacity: 0.35;
+      }
+      .track::after {
+        display: block;
+        width: 40%;
+        height: 100%;
+        border-radius: 2px;
+        background: var(--brand);
+        content: '';
+        animation: slide 1s ease-in-out infinite;
+      }
+      @keyframes slide {
+        from {
+          transform: translateX(-100%);
+        }
+        to {
+          transform: translateX(250%);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <img src="../../assets/logo.png" alt="" />
+      <h1>jSpoofer</h1>
+      <div class="track"></div>
+    </div>
+  </body>
+</html>
