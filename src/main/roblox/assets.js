@@ -103,7 +103,12 @@ const buildUpload = (buffer, name, creator) => {
 };
 
 const postAsset = (body, apiKey, signal) =>
-  fetch(ENDPOINTS.openCloudAssets, { method: 'POST', headers: { 'x-api-key': apiKey }, body, signal });
+  fetch(ENDPOINTS.openCloudAssets, {
+    method: 'POST',
+    headers: { 'x-api-key': apiKey },
+    body,
+    signal,
+  });
 
 const assetIdOf = payload => {
   const id = payload?.response?.assetId ?? payload?.response?.Id;
@@ -121,7 +126,8 @@ const pollOperation = async (operationPath, apiKey, signal) => {
     const response = await fetch(url, { headers: { 'x-api-key': apiKey }, signal });
     const payload = await response.json().catch(() => ({}));
     if (!payload.done) continue;
-    if (payload.error) throw new Error(`Roblox rejected the asset: ${payload.error.message ?? 'unknown'}`);
+    if (payload.error)
+      throw new Error(`Roblox rejected the asset: ${payload.error.message ?? 'unknown'}`);
     const assetId = assetIdOf(payload);
     if (assetId) return assetId;
   }
@@ -148,7 +154,8 @@ const uploadAsset = async ({ filePath, name, groupId, apiKey, userId, signal, on
     holdRateLimit(jitter(retryAfter * 1000, 8000));
   }
 
-  if (!response.ok) throw new Error(`Upload failed (${response.status}): ${JSON.stringify(payload)}`);
+  if (!response.ok)
+    throw new Error(`Upload failed (${response.status}): ${JSON.stringify(payload)}`);
 
   const direct = payload.done ? assetIdOf(payload) : null;
   if (direct) return direct;
@@ -160,12 +167,19 @@ const probeUploadPermission = async (apiKey, groupId) => {
   if (!apiKey) return { canUpload: false, reason: 'No API key saved for this account' };
   try {
     const response = await postAsset(
-      buildUpload(new Uint8Array(0), '__probe__', groupId ? { groupId: String(groupId) } : { userId: '0' }),
+      buildUpload(
+        new Uint8Array(0),
+        '__probe__',
+        groupId ? { groupId: String(groupId) } : { userId: '0' }
+      ),
       apiKey
     );
     if (response.status === 401 || response.status === 403) {
       const body = await response.json().catch(() => null);
-      return { canUpload: false, reason: body?.error?.message ?? `Permission denied (${response.status})` };
+      return {
+        canUpload: false,
+        reason: body?.error?.message ?? `Permission denied (${response.status})`,
+      };
     }
     if (response.status === 400) {
       const message = (await response.json().catch(() => null))?.error?.message ?? '';

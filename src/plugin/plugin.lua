@@ -8,6 +8,11 @@ local POLL_INTERVAL = 2
 local ANIMATION_ASSET_TYPE = 24
 local SCAN_YIELD_EVERY = 150
 local FLUSH_THRESHOLD = 10
+-- Scripts often carry the animation as a bare number ("AnimationId = 1234567890").
+-- Any digit run this long that is not glued to an identifier is treated as a
+-- candidate asset id; MarketplaceService then confirms whether it is an animation.
+local MIN_BARE_ID_DIGITS = 8
+local EXPLICIT_PREFIXES = { "rbxassetid://$", "[?&]id=$", "assetid=$", "asset/%?id=$" }
 
 local GENERIC_NAMES = {
 	id = true,
@@ -25,7 +30,7 @@ local state = {
 	polling = false,
 	placeName = "Unknown",
 	replaced = 0,
-	lastMappingHash = "",
+	lastMappingToken = "",
 }
 
 local widgetInfo = DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right, false, false, 240, 180, 200, 140)
@@ -129,17 +134,36 @@ local function cleanName(name)
 	return (name:match("^%s*(.-)%s*$"))
 end
 
-local function variableNameFor(source, assetId)
-	local position = source:find("rbxassetid://" .. assetId, 1, true)
+-- Names the animation after the closest assignment target to the left of the id
+-- on the same line, so `Roll = 3333333333, ["Slide Left"] = 4444444444` names
+-- each id correctly instead of reusing the first key on the line.
+local function variableNameFor(source, position)
 	if not position then
 		return nil
 	end
 	local lineStart = select(2, source:sub(1, position - 1):find(".*\n")) or 0
-	local lineEnd = (source:find("\n", position) or (#source + 1)) - 1
-	local line = source:sub(lineStart + 1, lineEnd)
+	local prefix = source:sub(lineStart + 1, position - 1)
 
-	local name = line:match("([%a_][%w_]*)%s*=%s*[\"']?rbxassetid")
-		or line:match("%[%s*[\"']([%w_ ]+)[\"']%s*%]%s*=%s*[\"']?rbxassetid")
+	local name, nameAt = nil, -1
+	local function scan(pattern)
+		local cursor = 1
+		while true do
+			local first, last, capture = prefix:find(pattern, cursor)
+			if not first then
+				return
+			end
+			local comparison = prefix:sub(last + 1, last + 1) == "="
+				or prefix:sub(last - 1, last - 1):match("[=~<>]") ~= nil
+			if not comparison and first > nameAt then
+				name, nameAt = capture, first
+			end
+			cursor = last + 1
+		end
+	end
+
+	scan("%[%s*[\"']([%w_ ]+)[\"']%s*%]%s*=")
+	scan("([%a_][%w_]*)%s*=")
+
 	if not name then
 		return nil
 	end
@@ -150,7 +174,38 @@ local function variableNameFor(source, assetId)
 	return name
 end
 
-local function resolveName(useInstanceNames, info, instanceName, source, assetId)
+-- Walks every asset-id-looking token in a source file. Explicit references
+-- (rbxassetid://, ?id=) always count; bare numbers need MIN_BARE_ID_DIGITS and
+-- must not be part of a longer identifier or a decimal number.
+local function eachSourceId(source, visit)
+	local cursor = 1
+	while true do
+		local first, last = source:find("%d+", cursor)
+		if not first then
+			return
+		end
+		cursor = last + 1
+
+		local before = source:sub(math.max(1, first - 16), first - 1)
+		local previous = first > 1 and source:sub(first - 1, first - 1) or ""
+		local following = source:sub(last + 1, last + 1)
+
+		local explicit = false
+		for _, prefix in ipairs(EXPLICIT_PREFIXES) do
+			if before:find(prefix) then
+				explicit = true
+				break
+			end
+		end
+
+		local glued = previous:match("[%w_%.]") ~= nil or following:match("[%w_%.]") ~= nil
+		if explicit or (not glued and (last - first + 1) >= MIN_BARE_ID_DIGITS) then
+			visit(source:sub(first, last), first)
+		end
+	end
+end
+
+local function resolveName(useInstanceNames, info, instanceName, source, position)
 	if not useInstanceNames then
 		return info.Name or "Unknown"
 	end
@@ -158,7 +213,7 @@ local function resolveName(useInstanceNames, info, instanceName, source, assetId
 		return instanceName
 	end
 	if source then
-		local variable = variableNameFor(source, assetId)
+		local variable = variableNameFor(source, position)
 		if variable then
 			return variable
 		end
@@ -174,7 +229,8 @@ local function sourceOf(object)
 end
 
 local function animationIdOf(object)
-	return object.AnimationId:match("rbxassetid://(%d+)")
+	local raw = object.AnimationId
+	return raw and raw:match("(%d+)") or nil
 end
 
 local function selectionScope()
@@ -205,17 +261,17 @@ local function eachAnimationReference(objects, visit)
 			local id = animationIdOf(object)
 			if id and not seen[id] then
 				seen[id] = true
-				visit(id, object.Name, nil)
+				visit(id, object.Name, nil, nil)
 			end
 		elseif object:IsA("LuaSourceContainer") then
 			local source = sourceOf(object)
 			if source and source ~= "" then
-				for id in source:gmatch("rbxassetid://(%d+)") do
+				eachSourceId(source, function(id, position)
 					if not seen[id] then
 						seen[id] = true
-						visit(id, nil, source)
+						visit(id, nil, source, position)
 					end
-				end
+				end)
 			end
 		end
 	end
@@ -253,7 +309,7 @@ local function scan(useInstanceNames, selectedOnly)
 		objects = {}
 	end
 
-	eachAnimationReference(objects, function(id, instanceName, source)
+	eachAnimationReference(objects, function(id, instanceName, source, position)
 		local ok, info = pcall(function()
 			return MarketplaceService:GetProductInfo(tonumber(id))
 		end)
@@ -261,7 +317,7 @@ local function scan(useInstanceNames, selectedOnly)
 			return
 		end
 		local kind, creatorId = creatorOf(info)
-		local name = cleanName(resolveName(useInstanceNames, info, instanceName, source, id))
+		local name = cleanName(resolveName(useInstanceNames, info, instanceName, source, position))
 		table.insert(results, string.format("%s - %s - %s: %s", id, name, kind, creatorId))
 		pending += 1
 		flush(false)
@@ -271,6 +327,28 @@ local function scan(useInstanceNames, selectedOnly)
 	request("/scan-result", "POST", { status = "completed", results = results })
 	state.scanning = false
 	render()
+end
+
+-- Rewrites every id token the scanner would have picked up, so bare numeric
+-- references are swapped exactly like rbxassetid:// ones and their formatting
+-- (url, quoted string, plain number) is preserved.
+local function replaceInSource(source, map)
+	local pieces, cursor, changed = {}, 1, false
+	eachSourceId(source, function(id, position)
+		local newId = map[id]
+		if not newId then
+			return
+		end
+		table.insert(pieces, source:sub(cursor, position - 1))
+		table.insert(pieces, newId)
+		cursor = position + #id
+		changed = true
+	end)
+	if not changed then
+		return source, false
+	end
+	table.insert(pieces, source:sub(cursor))
+	return table.concat(pieces), true
 end
 
 local function replaceIds(mappings)
@@ -298,12 +376,9 @@ local function replaceIds(mappings)
 			end
 		elseif object:IsA("LuaSourceContainer") then
 			local source = sourceOf(object)
-			if source then
-				local updated = source
-				for oldId, newId in pairs(map) do
-					updated = updated:gsub("rbxassetid://" .. oldId, "rbxassetid://" .. newId)
-				end
-				if updated ~= source then
+			if source and source ~= "" then
+				local updated, changed = replaceInSource(source, map)
+				if changed then
 					object.Source = updated
 					count += 1
 				end
@@ -352,9 +427,9 @@ local function poll()
 					task.spawn(scan, options.useInstanceNames == true, options.selectedOnly == true)
 				end
 				if body.mappings and #body.mappings > 0 then
-					local hash = table.concat(body.mappings, "|")
-					if hash ~= state.lastMappingHash then
-						state.lastMappingHash = hash
+					local token = body.mappingToken or table.concat(body.mappings, "|")
+					if token ~= state.lastMappingToken then
+						state.lastMappingToken = token
 						task.spawn(replaceIds, body.mappings)
 					end
 				end

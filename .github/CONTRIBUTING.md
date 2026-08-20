@@ -7,7 +7,7 @@ Thanks for considering a contribution.
 - Open an issue first for anything beyond a trivial fix, so the approach can be agreed on before you write code.
 - Keep PRs scoped to one change. Unrelated cleanup makes review slower.
 - Run `npm test` and `npm run plugin` locally — both must pass before review.
-- Follow the existing code style (no semicolon-free code, no added abstractions for one-off logic, no comments explaining *what* the code does).
+- Follow the existing code style (no semicolon-free code, no added abstractions for one-off logic, no comments explaining _what_ the code does).
 
 ## Project layout
 
@@ -29,7 +29,7 @@ Keep modules roughly 40–260 lines. If one grows past that, it is usually holdi
 
 ## Commit / PR expectations
 
-- Describe *why* the change is needed, not just what changed.
+- Describe _why_ the change is needed, not just what changed.
 - If you touch `src/plugin/plugin.lua`, run `npm run plugin` and confirm Studio still loads the plugin without errors.
 - If you touch update/version logic, be explicit about backward compatibility with existing installs.
 

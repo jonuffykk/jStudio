@@ -1,9 +1,25 @@
-import { $, closeModal, drawIcons, on, onState, openModal, savedLanguage, setStatus } from './lib.js';
+import {
+  $,
+  closeModal,
+  drawIcons,
+  on,
+  onState,
+  openModal,
+  savedLanguage,
+  setStatus,
+} from './lib.js';
 import { detectLanguage, setLanguage, t, translateDom } from './i18n.js';
 import { mountHome, refreshGroups, renderNextSteps, startRun } from './views/home.js';
 import { mountAccounts, openAccounts, refreshAccounts } from './views/accounts.js';
 import { mountHistory, renderHistory } from './views/history.js';
-import { checkForUpdates, installPlugin, mountSettings, openUpdate, pickDownloadFolder, refreshPlugin } from './views/settings.js';
+import {
+  checkForUpdates,
+  installPlugin,
+  mountSettings,
+  openUpdate,
+  pickDownloadFolder,
+  refreshPlugin,
+} from './views/settings.js';
 
 const api = window.jspoofer;
 const PAGES = ['home', 'history', 'settings'];

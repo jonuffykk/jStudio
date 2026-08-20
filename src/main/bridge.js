@@ -43,6 +43,7 @@ class StudioBridge extends EventEmitter {
     this.heartbeatTimer = null;
     this.pendingScan = null;
     this.pendingMappings = null;
+    this.mappingToken = null;
   }
 
   start() {
@@ -83,8 +84,11 @@ class StudioBridge extends EventEmitter {
     this.emit('scan', { status: 'cancelled', results: [] });
   }
 
-  pushMappings(mappings) {
+  // The token lets Studio tell two identical pushes apart, so re-applying or
+  // reverting the very same set of IDs is never swallowed as a duplicate.
+  pushMappings(mappings, token = String(Date.now())) {
     this.pendingMappings = mappings?.length ? mappings : null;
+    this.mappingToken = this.pendingMappings ? token : null;
   }
 
   clearHeartbeat() {
@@ -144,7 +148,9 @@ class StudioBridge extends EventEmitter {
         }
         if (this.pendingMappings) {
           payload.mappings = this.pendingMappings;
+          payload.mappingToken = this.mappingToken;
           this.pendingMappings = null;
+          this.mappingToken = null;
         }
         return reply(response, 200, payload);
       }
