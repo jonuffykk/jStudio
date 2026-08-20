@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self' https://cdn.tailwindcss.com https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'none'; form-action 'none'; base-uri 'none'"
+      content="default-src 'none'; script-src 'self' https://cdn.tailwindcss.com https://unpkg.com; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: https:; connect-src 'none'; form-action 'none'; base-uri 'none'"
     />
     <title>jSpoofer</title>
     <script src="https://cdn.tailwindcss.com"></script>
@@ -12,95 +12,154 @@
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     <script type="module" src="app.js"></script>
 
+    <style>
+      /* Both families are served locally so typography survives with no network.
+         Plus Jakarta Sans carries the interface; JetBrains Mono carries console
+         output, log lines and ID readouts. */
+      @font-face {
+        font-family: 'Plus Jakarta Sans';
+        font-style: normal;
+        font-weight: 200 800;
+        font-display: block;
+        src: url('../../assets/fonts/plus-jakarta-sans-latin.woff2') format('woff2');
+        unicode-range:
+          U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308,
+          U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+      }
+      @font-face {
+        font-family: 'JetBrains Mono';
+        font-style: normal;
+        font-weight: 400 700;
+        font-display: block;
+        src: url('../../assets/fonts/jetbrains-mono-latin.woff2') format('woff2');
+        unicode-range:
+          U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308,
+          U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+      }
+      @font-face {
+        font-family: 'JetBrains Mono';
+        font-style: normal;
+        font-weight: 400 700;
+        font-display: block;
+        src: url('../../assets/fonts/jetbrains-mono-latin-ext.woff2') format('woff2');
+        unicode-range:
+          U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+          U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+          U+2C60-2C7F, U+A720-A7FF;
+      }
+      @font-face {
+        font-family: 'Plus Jakarta Sans';
+        font-style: normal;
+        font-weight: 200 800;
+        font-display: block;
+        src: url('../../assets/fonts/plus-jakarta-sans-latin-ext.woff2') format('woff2');
+        unicode-range:
+          U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+          U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+          U+2C60-2C7F, U+A720-A7FF;
+      }
+    </style>
+
     <style type="text/tailwindcss">
       @layer components {
         .surface {
           @apply border border-paper-line bg-paper-card dark:border-night-line dark:bg-night-card;
         }
         .card {
-          @apply surface rounded p-3.5;
+          @apply surface p-4 shadow-[0_1px_2px_0_rgb(0_0_0/0.04)] dark:shadow-none;
         }
         .section-label {
-          @apply text-[10px] font-semibold uppercase tracking-[0.09em] text-ink-faint;
+          @apply text-[11px] font-medium leading-none tracking-normal text-ink dark:text-night-text;
         }
         .hint {
-          @apply text-[11px] leading-relaxed text-ink-faint;
+          @apply text-[11px] leading-relaxed text-ink-faint dark:text-night-faint;
         }
         .field {
-          @apply w-full rounded border border-paper-line bg-paper px-2.5 py-[7px] text-[12px]
-            outline-none transition-[border-color,box-shadow] placeholder:text-ink-faint
-            focus:border-brand focus:ring-2 focus:ring-brand/25
-            dark:border-night-line dark:bg-night dark:text-night-text;
+          @apply flex h-8 w-full border border-paper-line bg-paper-card px-3 py-1 text-[12px]
+            text-ink outline-none transition-colors placeholder:text-ink-faint dark:text-night-faint
+            focus:border-ink focus-visible:border-ink
+            disabled:cursor-not-allowed disabled:opacity-50
+            dark:border-night-line dark:bg-night dark:text-night-text
+            dark:focus:border-night-text dark:focus-visible:border-night-text;
         }
         .btn {
-          @apply inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded px-3 py-[7px]
-            text-[12px] font-medium transition
-            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/50
-            disabled:cursor-not-allowed disabled:opacity-45;
+          @apply inline-flex h-8 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap border
+            border-transparent px-3 text-[12px] font-medium transition-colors
+            focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2
+            focus-visible:outline-brand disabled:pointer-events-none disabled:opacity-50;
         }
         .btn-primary {
-          @apply bg-brand text-white transition-colors hover:bg-brand-deep;
+          @apply bg-brand text-white hover:bg-brand-deep;
         }
         .btn-quiet {
-          @apply border border-paper-line text-ink-soft hover:bg-paper hover:text-ink
-            dark:border-night-line dark:text-ink-faint dark:hover:bg-night dark:hover:text-night-text;
+          @apply border-paper-line bg-paper-card text-ink hover:bg-paper
+            dark:border-night-line dark:bg-transparent dark:text-night-text dark:hover:bg-night-line/60;
         }
         .btn-destructive {
-          @apply border border-red-300/70 text-red-600 hover:bg-red-50
-            dark:border-red-900/70 dark:text-red-400 dark:hover:bg-red-950/40;
+          @apply border-transparent bg-red-600 text-white hover:bg-red-600/90;
         }
         .btn-ghost {
-          @apply grid h-7 w-7 place-items-center rounded text-ink-faint transition
-            hover:bg-paper hover:text-ink focus-visible:outline-none focus-visible:ring-2
-            focus-visible:ring-brand/50 dark:hover:bg-night dark:hover:text-night-text;
+          @apply grid h-7 w-7 shrink-0 place-items-center text-ink-soft transition-colors
+            hover:bg-paper hover:text-ink focus-visible:outline focus-visible:outline-1
+            focus-visible:outline-offset-1 focus-visible:outline-brand
+            dark:text-night-faint dark:hover:bg-night-line/60 dark:hover:text-night-text;
         }
         .nav-item {
-          @apply flex items-center gap-2.5 rounded px-2.5 py-[7px] text-left text-[12.5px]
-            text-ink-soft transition hover:bg-paper hover:text-ink
-            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/50
-            dark:text-ink-faint dark:hover:bg-night dark:hover:text-night-text;
+          @apply flex items-center gap-2.5 px-2.5 py-[7px] text-left text-[12.5px] font-medium
+            text-ink-soft transition-colors hover:bg-paper hover:text-ink
+            focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-[-1px]
+            focus-visible:outline-brand dark:text-night-faint
+            dark:hover:bg-night-line/60 dark:hover:text-night-text;
         }
         .nav-item[aria-current='page'] {
-          @apply bg-brand-tint font-medium text-brand dark:bg-brand-shade dark:text-white;
+          @apply bg-paper text-ink dark:bg-night-line dark:text-night-text;
         }
         .tab {
-          @apply rounded px-2 py-1 text-[11px] font-medium text-ink-faint transition
-            hover:text-ink focus-visible:outline-none focus-visible:ring-2
-            focus-visible:ring-brand/50 dark:hover:text-night-text;
+          @apply border border-transparent px-2.5 py-1 text-[11px] font-medium text-ink-soft
+            transition-colors hover:text-ink focus-visible:outline focus-visible:outline-1
+            focus-visible:outline-offset-1 focus-visible:outline-brand
+            dark:text-night-faint dark:hover:text-night-text;
         }
         .tab[aria-selected='true'] {
-          @apply bg-brand-tint text-brand dark:bg-brand-shade dark:text-white;
+          @apply border-paper-line bg-paper-card text-ink dark:border-night-line dark:bg-night-line dark:text-night-text;
         }
         .switch {
-          @apply relative h-[18px] w-8 shrink-0 rounded-full bg-ink-faint/40 transition
-            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/50;
+          @apply relative h-[18px] w-8 shrink-0 border border-transparent bg-ink-faint/45
+            transition-colors focus-visible:outline focus-visible:outline-1
+            focus-visible:outline-offset-2 focus-visible:outline-brand;
         }
         .switch::after {
-          @apply absolute left-[2px] top-[2px] h-[14px] w-[14px] rounded-full bg-white transition;
+          @apply absolute left-[1px] top-[1px] h-[14px] w-[14px] bg-white transition-transform;
           content: '';
         }
         .switch[aria-checked='true'] {
           @apply bg-brand;
         }
         .switch[aria-checked='true']::after {
-          @apply translate-x-[14px];
+          @apply translate-x-[15px];
         }
         .option {
-          @apply flex items-start justify-between gap-5 py-2;
+          @apply flex items-start justify-between gap-5 py-2.5;
         }
         .option-name {
-          @apply text-[12.5px] text-ink dark:text-night-text;
+          @apply text-[12.5px] font-medium text-ink dark:text-night-text;
         }
         .terminal {
-          @apply h-[214px] overflow-y-auto rounded border border-paper-line bg-terminal px-3 py-2.5
-            text-[11.5px] leading-[1.75] text-zinc-300 dark:border-night-line;
+          @apply h-[214px] overflow-y-auto border border-paper-line bg-terminal px-3 py-2.5
+            font-mono text-[11px] leading-[1.7] text-zinc-300 dark:border-night-line;
         }
         .modal {
-          @apply w-[352px] rounded-lg border border-paper-line bg-paper-card p-5 text-ink shadow-2xl
-            backdrop:bg-black/55 dark:border-night-line dark:bg-night-card dark:text-night-text;
+          @apply w-[360px] border border-paper-line bg-paper-card p-5 text-ink shadow-lg
+            backdrop:bg-black/60 dark:border-night-line dark:bg-night-card dark:text-night-text;
+        }
+        .badge {
+          @apply inline-flex shrink-0 items-center border px-1.5 py-px text-[10px] font-medium;
+        }
+        .num {
+          @apply font-mono tabular-nums;
         }
         .avatar {
-          @apply shrink-0 rounded-full bg-paper object-cover dark:bg-night;
+          @apply shrink-0 bg-paper object-cover dark:bg-night;
         }
         .lucide {
           @apply h-[14px] w-[14px] shrink-0;
@@ -108,11 +167,14 @@
         }
       }
       ::-webkit-scrollbar {
-        width: 7px;
-        height: 7px;
+        width: 8px;
+        height: 8px;
       }
       ::-webkit-scrollbar-thumb {
-        @apply rounded-full bg-ink-faint/30;
+        @apply bg-ink-faint/30;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        @apply bg-ink-faint/50;
       }
     </style>
   </head>
@@ -124,10 +186,10 @@
       class="flex h-[38px] shrink-0 items-center justify-between border-b border-paper-line bg-paper-card pl-3 pr-1 dark:border-night-line dark:bg-night-card [-webkit-app-region:drag]"
     >
       <div class="flex items-center gap-2">
-        <img src="../../assets/logo.png" alt="" class="h-[17px] w-[17px]" />
-        <span class="text-[12.5px] font-semibold tracking-tight">jSpoofer</span>
+        <img src="../../assets/logo.png" alt="" class="h-[19px] w-[19px] shrink-0" />
+        <span class="text-[12.5px] font-bold leading-none tracking-[-0.02em]">jSpoofer</span>
         <span
-          class="rounded bg-paper px-1.5 py-px font-mono text-[10px] text-ink-faint dark:bg-night"
+          class="num text-[10px] leading-none text-ink-faint dark:text-night-faint"
           id="version"
         ></span>
       </div>
@@ -163,40 +225,43 @@
         <div class="flex-1"></div>
 
         <button
-          class="flex w-full items-center gap-2.5 rounded px-2 py-2 text-left transition hover:bg-paper focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 dark:hover:bg-night"
+          class="flex w-full items-center gap-2.5 px-2 py-2 text-left transition-colors hover:bg-paper focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-[-1px] focus-visible:outline-brand dark:hover:bg-night-line/60"
           id="btnAccount"
         >
           <img
-            src="../../assets/logo.png"
+            src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2371717a' fill-opacity='.18'/%3E%3Cpath d='M16 17a5 5 0 100-10 5 5 0 000 10zm0 2c-5 0-9 2.8-9 6.2V28h18v-2.8c0-3.4-4-6.2-9-6.2z' fill='%2371717a'/%3E%3C/svg%3E"
             alt=""
             class="avatar h-[26px] w-[26px]"
             id="accountAvatar"
           />
           <span class="min-w-0 flex-1">
             <span class="block truncate text-[11.5px] font-medium" id="accountName"></span>
-            <span class="block truncate text-[10.5px] text-ink-faint" id="accountHandle"></span>
+            <span
+              class="block truncate text-[10.5px] text-ink-faint dark:text-night-faint"
+              id="accountHandle"
+            ></span>
           </span>
-          <i data-lucide="chevrons-up-down" class="text-ink-faint"></i>
+          <i data-lucide="chevrons-up-down" class="text-ink-faint dark:text-night-faint"></i>
         </button>
       </nav>
 
       <main class="flex-1 overflow-y-auto p-3.5">
         <section class="flex flex-col gap-3" id="page-home">
-          <div
-            class="flex items-center gap-2.5 rounded surface px-3 py-2 text-[12px]"
-            id="studioStrip"
-          >
-            <span
-              class="h-[7px] w-[7px] shrink-0 rounded-full bg-ink-faint/50"
-              id="studioDot"
-            ></span>
-            <span class="flex-1 truncate text-ink-soft dark:text-ink-faint" id="studioText"></span>
-            <button class="btn btn-quiet hidden !py-1 !text-[11px]" id="btnScanSelected">
-              <i data-lucide="mouse-pointer-click"></i><span id="selectionText"></span>
-            </button>
+          <!-- One panel: Studio status on top, whatever the run still needs as
+               rows underneath. These used to be two boxes saying overlapping things. -->
+          <div class="surface">
+            <div class="flex items-center gap-2.5 px-3 py-2 text-[12px]" id="studioStrip">
+              <span class="h-[7px] w-[7px] shrink-0 bg-ink-faint/60" id="studioDot"></span>
+              <span class="flex-1 truncate text-ink dark:text-night-text" id="studioText"></span>
+              <button class="btn btn-quiet hidden !h-6 !px-2 !text-[11px]" id="btnScanSelected">
+                <i data-lucide="mouse-pointer-click"></i><span id="selectionText"></span>
+              </button>
+            </div>
+            <div
+              class="hidden divide-y divide-paper-line border-t border-paper-line dark:divide-night-line dark:border-night-line"
+              id="nextStep"
+            ></div>
           </div>
-
-          <div class="hidden" id="nextStep"></div>
 
           <div class="card">
             <div class="mb-2.5 flex items-center justify-between">
@@ -234,11 +299,7 @@
             </div>
 
             <div class="terminal" id="queueView" role="tabpanel"></div>
-            <div
-              class="terminal hidden whitespace-pre-wrap break-words font-mono"
-              id="logView"
-              role="tabpanel"
-            ></div>
+            <div class="terminal hidden" id="logView" role="tabpanel"></div>
 
             <div class="mt-3 flex items-center gap-2">
               <label class="sr-only" for="groupSelect" data-t="home.uploadTarget"></label>
@@ -277,7 +338,7 @@
           <div class="card">
             <h2 class="section-label" data-t="plugin.title"></h2>
             <p class="hint mb-3 mt-1" data-t="plugin.desc"></p>
-            <div class="mb-2.5 hidden rounded px-2.5 py-2 text-[11.5px]" id="pluginNotice"></div>
+            <div class="mb-2.5 hidden px-2.5 py-2 text-[11.5px]" id="pluginNotice"></div>
             <div class="flex gap-2">
               <button class="btn btn-primary flex-1" id="btnInstallPlugin"></button>
               <button
@@ -351,7 +412,7 @@
               <div>
                 <label class="section-label mb-1.5 block" for="uploadConcurrency">
                   <span data-t="tuning.upload"></span> ·
-                  <span class="font-mono" id="uploadConcurrencyValue"></span>
+                  <span class="num" id="uploadConcurrencyValue"></span>
                 </label>
                 <input
                   type="range"
@@ -364,7 +425,7 @@
               <div>
                 <label class="section-label mb-1.5 block" for="downloadConcurrency">
                   <span data-t="tuning.download"></span> ·
-                  <span class="font-mono" id="downloadConcurrencyValue"></span>
+                  <span class="num" id="downloadConcurrencyValue"></span>
                 </label>
                 <input
                   type="range"
@@ -464,16 +525,16 @@
         class="absolute inset-y-0 left-0 w-0 bg-brand/10 transition-[width] duration-300"
         id="statusFill"
       ></div>
+      <span class="relative h-[7px] w-[7px] shrink-0 bg-ink-faint/50" id="statusDot"></span>
       <span
-        class="relative h-[7px] w-[7px] shrink-0 rounded-full bg-ink-faint/50"
-        id="statusDot"
-      ></span>
-      <span
-        class="relative flex-1 truncate text-[11px] text-ink-soft dark:text-ink-faint"
+        class="relative flex-1 truncate text-[11px] text-ink-soft dark:text-night-faint"
         id="statusText"
         aria-live="polite"
       ></span>
-      <span class="relative hidden font-mono text-[10px] text-ink-faint" id="statusCount"></span>
+      <span
+        class="relative hidden num text-[10px] text-ink-faint dark:text-night-faint"
+        id="statusCount"
+      ></span>
     </footer>
 
     <dialog class="modal" id="accountsModal">
@@ -485,14 +546,25 @@
       </div>
 
       <div
-        class="hidden items-center gap-3 rounded border border-paper-line bg-paper p-3 dark:border-night-line dark:bg-night"
+        class="hidden items-center gap-3 border border-paper-line bg-paper p-3 dark:border-night-line dark:bg-night"
         id="activeAccount"
       >
-        <img src="../../assets/logo.png" alt="" class="avatar h-10 w-10" id="profileAvatar" />
+        <img
+          src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2371717a' fill-opacity='.18'/%3E%3Cpath d='M16 17a5 5 0 100-10 5 5 0 000 10zm0 2c-5 0-9 2.8-9 6.2V28h18v-2.8c0-3.4-4-6.2-9-6.2z' fill='%2371717a'/%3E%3C/svg%3E"
+          alt=""
+          class="avatar h-10 w-10"
+          id="profileAvatar"
+        />
         <div class="min-w-0 flex-1">
           <p class="truncate text-[13px] font-semibold" id="profileName"></p>
-          <p class="truncate text-[11px] text-ink-faint" id="profileHandle"></p>
-          <p class="truncate font-mono text-[10px] text-ink-faint" id="profileKeyState"></p>
+          <p
+            class="truncate text-[11px] text-ink-faint dark:text-night-faint"
+            id="profileHandle"
+          ></p>
+          <p
+            class="truncate num text-[10px] text-ink-faint dark:text-night-faint"
+            id="profileKeyState"
+          ></p>
         </div>
         <button class="btn btn-quiet !px-2.5" id="btnSignOut" data-t-title="accounts.signOut">
           <i data-lucide="log-out"></i>
@@ -530,7 +602,6 @@
           </div>
           <p class="hidden text-[11.5px] text-red-500" id="authError" role="alert"></p>
           <button class="btn btn-primary" id="btnSignIn"></button>
-          <p class="hint" data-t="accounts.storage"></p>
         </div>
       </div>
     </dialog>
@@ -555,10 +626,10 @@
     <dialog class="modal" id="updateModal">
       <h2 class="text-[13.5px] font-semibold" id="updateTitle"></h2>
       <p class="hint mt-1" id="updateSubtitle"></p>
-      <div class="my-4 h-1.5 overflow-hidden rounded-full bg-paper dark:bg-night">
+      <div class="my-4 h-1.5 overflow-hidden bg-paper dark:bg-night">
         <div class="h-full w-0 bg-brand transition-[width]" id="updateBar"></div>
       </div>
-      <div class="mb-4 flex justify-between font-mono text-[10px] text-ink-faint">
+      <div class="mb-4 flex justify-between num text-[10px] text-ink-faint dark:text-night-faint">
         <span id="updateSpeed"></span>
         <span id="updatePercent">0%</span>
       </div>

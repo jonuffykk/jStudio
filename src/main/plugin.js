@@ -18,7 +18,8 @@ const pluginsDir = () =>
 
 const listDir = dir => fs.readdir(dir).catch(() => []);
 
-const versionOf = name => name.match(PLUGIN_PATTERN)?.[1] || name.match(/v(\d+(?:\.\d+)*)/i)?.[1] || null;
+const versionOf = name =>
+  name.match(PLUGIN_PATTERN)?.[1] || name.match(/v(\d+(?:\.\d+)*)/i)?.[1] || null;
 
 const bundledPlugin = async () => {
   const candidates = [

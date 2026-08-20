@@ -7,61 +7,63 @@ const LOG_TONE = {
   upload: 'text-amber-400',
   uploaded: 'text-emerald-400',
   saved: 'text-emerald-400',
-  cached: 'text-zinc-500',
-  owned: 'text-zinc-500',
+  cached: 'text-zinc-400',
+  owned: 'text-zinc-400',
   'download-failed': 'text-red-400',
   'upload-failed': 'text-red-400',
   warn: 'text-orange-400',
-  info: 'text-zinc-500',
+  info: 'text-zinc-400',
   error: 'font-medium text-red-400',
 };
 
 const QUEUE_ROW = {
-  found: ['circle-dashed', 'text-zinc-500'],
+  found: ['circle-dashed', 'text-zinc-400'],
   download: ['arrow-down-to-line', 'text-violet-400'],
   upload: ['arrow-up-from-line', 'text-amber-400'],
   uploaded: ['check', 'text-emerald-400'],
   saved: ['check', 'text-emerald-400'],
-  cached: ['zap', 'text-zinc-500'],
-  owned: ['user-check', 'text-zinc-500'],
+  cached: ['zap', 'text-zinc-400'],
+  owned: ['user-check', 'text-zinc-400'],
   'download-failed': ['x', 'text-red-400'],
   'upload-failed': ['x', 'text-red-400'],
 };
 
+// The log is a two-column list, not padded text: the label sits in its own
+// fixed column so rows line up without needing a monospaced family.
 const describe = event => {
   const label = event.name ? `${event.name} · ${event.id}` : event.id;
   switch (event.kind) {
     case 'found':
-      return `found  ${label}`;
+      return ['found', label];
     case 'download':
-      return `get    ${label}`;
+      return ['get', label];
     case 'upload':
-      return `put    ${label}`;
+      return ['put', label];
     case 'uploaded':
-      return `done   ${event.name} · ${event.id} → ${event.newId}`;
+      return ['done', `${event.name} · ${event.id} → ${event.newId}`];
     case 'cached':
-      return `cached ${event.name} · ${event.id} → ${event.newId}`;
+      return ['cached', `${event.name} · ${event.id} → ${event.newId}`];
     case 'saved':
-      return `saved  ${label}`;
+      return ['saved', label];
     case 'owned':
-      return `owned  ${label}`;
+      return ['owned', label];
     case 'download-failed':
-      return `fail   ${label} — download: ${event.reason}`;
+      return ['fail', `${label} — download: ${event.reason}`];
     case 'upload-failed':
-      return `fail   ${label} — upload: ${event.reason}`;
+      return ['fail', `${label} — upload: ${event.reason}`];
     case 'warn':
-      return `retry  ${label} — ${event.reason}`;
+      return ['retry', `${label} — ${event.reason}`];
     case 'error':
-      return `error  ${event.message}`;
+      return ['error', event.message];
     default:
-      return `info   ${event.message ?? label}`;
+      return ['info', event.message ?? label];
   }
 };
 
 const queue = new Map();
 let logLines = 0;
 
-const emptyState = message => `<p class="text-zinc-500">${escapeHtml(message)}</p>`;
+const emptyState = message => `<p class="text-zinc-400">${escapeHtml(message)}</p>`;
 
 export const renderQueue = () => {
   const view = $('queueView');
@@ -74,7 +76,7 @@ export const renderQueue = () => {
         item => `<div class="flex items-center gap-2 py-[1px]">
           <span class="${item.tone}">${icon(item.icon)}</span>
           <span class="min-w-0 flex-1 truncate">${escapeHtml(item.name)}</span>
-          <span class="font-mono text-[10px] text-zinc-500">${escapeHtml(item.id)}</span>
+          <span class="num text-[10px] text-zinc-400">${escapeHtml(item.id)}</span>
         </div>`
       )
       .join('')
@@ -87,13 +89,25 @@ export const appendLog = event => {
   if (!logLines) view.textContent = '';
   logLines++;
 
-  const line = document.createElement('span');
+  const line = document.createElement('div');
+  line.className = 'flex gap-2.5';
+
   if (event.kind === 'summary') {
-    line.className = `block pt-1.5 font-medium ${event.failed ? 'text-amber-400' : 'text-emerald-400'}`;
+    line.className += ` pt-1.5 font-medium ${event.failed ? 'text-amber-400' : 'text-emerald-400'}`;
     line.textContent = `${event.done}/${event.total} completed${event.failed ? `, ${event.failed} failed` : ''}`;
   } else {
-    line.className = `block ${LOG_TONE[event.kind] ?? 'text-zinc-500'}`;
-    line.textContent = describe(event);
+    const [tag, text] = describe(event);
+    const tone = LOG_TONE[event.kind] ?? 'text-zinc-400';
+
+    const marker = document.createElement('span');
+    marker.className = `w-[42px] shrink-0 text-right ${tone}`;
+    marker.textContent = tag;
+
+    const body = document.createElement('span');
+    body.className = 'num min-w-0 flex-1 break-words text-zinc-400';
+    body.textContent = text;
+
+    line.append(marker, body);
   }
 
   view.appendChild(line);

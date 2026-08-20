@@ -4,23 +4,30 @@
     <meta charset="utf-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self'"
+      content="default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; img-src 'self'"
     />
     <title>jSpoofer</title>
     <style>
+      @font-face {
+        font-family: 'Plus Jakarta Sans';
+        font-style: normal;
+        font-weight: 200 800;
+        font-display: block;
+        src: url('../../assets/fonts/plus-jakarta-sans-latin.woff2') format('woff2');
+      }
       :root {
         --bg: #ffffff;
-        --line: #e6e6ea;
-        --text: #16161d;
-        --faint: #8d8d9e;
-        --brand: #7048e8;
+        --line: #e4e4e7;
+        --text: #09090b;
+        --faint: #71717a;
+        --brand: #7c3aed;
       }
       @media (prefers-color-scheme: dark) {
         :root {
-          --bg: #16161d;
-          --line: #24242e;
-          --text: #e8e8ef;
-          --faint: #6f7482;
+          --bg: #0c0c0f;
+          --line: #27272a;
+          --text: #fafafa;
+          --faint: #71717a;
         }
       }
       html,
@@ -36,12 +43,12 @@
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 10px;
+        gap: 12px;
         border: 1px solid var(--line);
-        border-radius: 10px;
         background: var(--bg);
         color: var(--text);
-        font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+        font-family:
+          'Plus Jakarta Sans', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
         -webkit-app-region: drag;
       }
       img {
@@ -50,23 +57,21 @@
       }
       h1 {
         margin: 0;
-        font-size: 14px;
-        font-weight: 600;
-        letter-spacing: -0.01em;
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: -0.015em;
       }
       .track {
+        position: relative;
         width: 96px;
         height: 2px;
         overflow: hidden;
-        border-radius: 2px;
-        background: var(--faint);
-        opacity: 0.35;
+        background: color-mix(in srgb, var(--faint) 30%, transparent);
       }
       .track::after {
         display: block;
         width: 40%;
         height: 100%;
-        border-radius: 2px;
         background: var(--brand);
         content: '';
         animation: slide 1s ease-in-out infinite;

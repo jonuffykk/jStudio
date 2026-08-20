@@ -13,14 +13,19 @@ test('normalizeCookie accepts every common paste format', () => {
   assert.equal(normalizeCookie('ABC123'), '.ROBLOSECURITY=ABC123');
   assert.equal(normalizeCookie('.ROBLOSECURITY=ABC123'), '.ROBLOSECURITY=ABC123');
   assert.equal(normalizeCookie('"ABC123"'), '.ROBLOSECURITY=ABC123');
-  assert.equal(normalizeCookie('_|WARNING|_do-not-share; .ROBLOSECURITY=XYZ'), '.ROBLOSECURITY=XYZ');
+  assert.equal(
+    normalizeCookie('_|WARNING|_do-not-share; .ROBLOSECURITY=XYZ'),
+    '.ROBLOSECURITY=XYZ'
+  );
   assert.equal(normalizeCookie(''), '');
   assert.equal(normalizeCookie(null), '');
 });
 
 test('parseAssetLines reads the wire format, skips noise and dedupes', () => {
   const entries = parseAssetLines(
-    ['123 - Run - U: 55', '# comment', '123 - Run - U: 55', '999 - Dance - G: 77', 'garbage'].join('\n')
+    ['123 - Run - U: 55', '# comment', '123 - Run - U: 55', '999 - Dance - G: 77', 'garbage'].join(
+      '\n'
+    )
   );
   assert.deepEqual(entries, [
     { id: '123', name: 'Run', creatorType: 'user', creatorId: '55' },

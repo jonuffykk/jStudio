@@ -1,7 +1,7 @@
 'use strict';
 
 const path = require('path');
-const { BrowserWindow, app, nativeImage, nativeTheme, shell } = require('electron');
+const { BrowserWindow, app, nativeTheme, shell } = require('electron');
 const { EXTERNAL_HOSTS } = require('./config');
 const { read, write } = require('./lib');
 
@@ -10,7 +10,7 @@ const RENDERER = path.join(ROOT, 'src', 'renderer');
 const SPLASH_MIN_MS = 1100;
 const THEME_FILE = 'ui.json';
 
-const BACKGROUND = { dark: '#0d0d12', light: '#f7f7f9' };
+const BACKGROUND = { dark: '#09090b', light: '#f4f4f5' };
 
 let theme = 'dark';
 
@@ -29,9 +29,11 @@ const setTheme = value => {
 let mainWindow = null;
 let splashWindow = null;
 
-const appIcon = nativeImage.createFromPath(
-  path.join(ROOT, 'assets', process.platform === 'win32' ? 'logo.ico' : 'logo.png')
-);
+// Windows resolves a taskbar button's icon from the multi-resolution ICO, so the
+// path is handed to Electron as a string rather than as a NativeImage — a
+// NativeImage collapses the file to a single 256px bitmap, and a taskbar asking
+// for 24 or 32px can silently ignore it. Other platforms take the PNG.
+const ICON_PATH = path.join(ROOT, 'assets', process.platform === 'win32' ? 'logo.ico' : 'logo.png');
 
 const isAllowedExternal = url => {
   try {
@@ -61,7 +63,7 @@ const createSplash = () => {
   splashWindow = new BrowserWindow({
     width: 300,
     height: 180,
-    icon: appIcon,
+    icon: ICON_PATH,
     frame: false,
     resizable: false,
     transparent: true,
@@ -84,7 +86,7 @@ const createMain = () => {
     minWidth: 880,
     minHeight: 520,
     title: 'jSpoofer',
-    icon: appIcon,
+    icon: ICON_PATH,
     frame: false,
     show: false,
     backgroundColor: BACKGROUND[theme],
@@ -105,7 +107,7 @@ const createMain = () => {
       () => {
         splashWindow?.destroy();
         if (!mainWindow || mainWindow.isDestroyed()) return;
-        mainWindow.setIcon(appIcon);
+        mainWindow.setIcon(ICON_PATH);
         mainWindow.show();
       },
       Math.max(0, SPLASH_MIN_MS - (Date.now() - openedAt))

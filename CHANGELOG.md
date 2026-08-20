@@ -1,5 +1,47 @@
 # Changelog
 
+## v2.1.0
+
+### Windows icon
+
+- Windows builds carry the jSpoofer icon again. `signAndEditExecutable: false` was switching off the electron-builder step that stamps the icon and version metadata into the executable, so the shipped binary kept Electron's default icon in the taskbar, Alt-Tab and Explorer.
+- Running from source no longer shows the Electron icon either. The AppUserModelID is now set only for packaged builds — declaring one while running from source moved the taskbar button to an ID Windows has no shortcut for, so it fell back to the host binary's icon (`electron.exe`) instead of the window icon.
+
+### History you can undo
+
+- Every run now stores the old → new ID pairs it produced, so a run in **History** can be **reverted** (Studio is told to put the original IDs back) or **re-applied** (the new IDs are pushed again). Each row shows how many IDs it holds, whether it is currently live in Studio, and a **Details** panel listing every pair.
+- The bridge tags each mapping push with a token, so Studio no longer ignores a second push of an identical set — reverting and re-applying the same run works as many times as you like.
+
+### Animation IDs written as plain numbers
+
+- Scripts that store an animation as a bare number (`Punch = 987654321`) or a legacy asset URL are now found and rewritten, not just `rbxassetid://` strings. Any digit run of eight or more that isn't part of an identifier or a decimal is checked against Roblox and kept only if it really is an animation.
+- Replacements preserve the original formatting — a plain number stays a plain number, a URL stays a URL.
+- Names read from scripts now come from the nearest assignment to the left of the ID, so a table like `{ Roll = 1111111111, ["Slide Left"] = 2222222222 }` names each entry correctly.
+
+### Typography
+
+- Two typefaces, both bundled locally (96 KB total, latin + latin-ext) so they hold up with no network.
+  - **Plus Jakarta Sans**, variable 200–800, carries the whole interface. Its geometric skeleton and humanist terminals read engineered rather than corporate-neutral, and the high x-height survives the 10–13px sizes this interface lives at.
+  - **JetBrains Mono**, variable 400–700, carries console output, log lines and ID readouts — the places that want to read as code.
+- Nothing else gets a third family. Both Tailwind font tokens map to one of these two.
+- The run log is now a real two-column list rather than text padded with spaces to fake alignment.
+
+### Interface
+
+- Inputs no longer glow on focus. The focus ring is gone; the border simply goes solid instead, in both themes.
+- Buttons, tabs and nav items trade their translucent focus halo for a one-pixel outline.
+- The Studio status strip and the "next step" prompts were two stacked boxes above the console saying overlapping things. They are one panel now — status on top, outstanding steps as rows underneath — and the redundant "open the place in Studio" step is folded into the status line itself.
+- The mark is back in the title bar next to the wordmark.
+- Muted text was failing WCAG AA on dark surfaces (4.04:1). Dark mode gets its own muted tone at 7:1, and the console's dimmed lines were lifted too. Every visible string in both themes now clears 4.5:1.
+
+- Reworked to sit closer to shadcn/ui: zinc surfaces, flat one-pixel borders, ring-style focus states, consistent 32px controls and quieter badges.
+- Nothing is rounded any more — every radius resolves to zero, everywhere.
+- The splash window was still on the old palette, the old font and rounded corners. It matches the app now.
+- The title bar leads with the wordmark. The mark is dense artwork that turned to mush at 17px; it stays on the splash where it renders at 52px.
+- Accounts without a Roblox headshot get a neutral placeholder instead of the app's own logo, which read as if it were the person's picture.
+- The "next step" prompt is a proper alert with a button, not an underlined link inside a filled amber block.
+- The note about credentials being encrypted by Windows is gone from the sign-in form.
+
 ## v2.0.0
 
 Everything from v1.7.0 onward, rolled into one release. The project was renamed, the codebase was rewritten, and credentials no longer sit in plain text.
@@ -43,6 +85,12 @@ Everything from v1.7.0 onward, rolled into one release. The project was renamed,
 - Audio spoofing was tried and dropped — Open Cloud's upload contract differs enough that it needs its own handling. jSpoofer is animation-only.
 
 ### Interface
+
+- Inputs no longer glow on focus. The focus ring is gone; the border simply goes solid instead, in both themes.
+- Buttons, tabs and nav items trade their translucent focus halo for a one-pixel outline.
+- The Studio status strip and the "next step" prompts were two stacked boxes above the console saying overlapping things. They are one panel now — status on top, outstanding steps as rows underneath — and the redundant "open the place in Studio" step is folded into the status line itself.
+- The mark is back in the title bar next to the wordmark.
+- Muted text was failing WCAG AA on dark surfaces (4.04:1). Dark mode gets its own muted tone at 7:1, and the console's dimmed lines were lifted too. Every visible string in both themes now clears 4.5:1.
 
 - New look: violet accent, the system's own typeface, flat surfaces, monospace for IDs and logs.
 - Light and dark themes now apply from the splash screen onward instead of flashing dark first, and the splash stays up long enough to read.

@@ -16,7 +16,6 @@ const post = (path, body) =>
 const get = path =>
   fetch(`http://${BRIDGE.host}:${BRIDGE.port}${path}`).then(response => response.json());
 
-
 test('bridge tracks connection, scans, selection and mappings', async t => {
   const bridge = new StudioBridge();
   await bridge.start();
@@ -51,8 +50,14 @@ test('bridge tracks connection, scans, selection and mappings', async t => {
   await post('/selection', { count: '3' });
   assert.deepEqual((await selected)[0], { count: 3 });
 
-  bridge.pushMappings(['1=2']);
-  assert.deepEqual((await get('/poll')).mappings, ['1=2']);
+  bridge.pushMappings(['1=2'], 'token-a');
+  const firstPush = await get('/poll');
+  assert.deepEqual(firstPush.mappings, ['1=2']);
+  assert.equal(firstPush.mappingToken, 'token-a');
+  assert.deepEqual(await get('/poll'), {});
+
+  bridge.pushMappings(['1=2'], 'token-b');
+  assert.equal((await get('/poll')).mappingToken, 'token-b');
 
   const replaced = once(bridge, 'replace');
   await post('/replace-complete', { replacedCount: 7, elapsed: 1.5 });
@@ -66,4 +71,3 @@ test('bridge tracks connection, scans, selection and mappings', async t => {
   assert.equal((await disconnected)[0].connected, false);
   assert.equal(bridge.isConnected(), false);
 });
-

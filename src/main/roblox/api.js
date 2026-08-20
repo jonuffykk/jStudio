@@ -122,7 +122,10 @@ const getPlaceIds = async (creatorType, creatorId, cookie, max) => {
   let cursor = null;
 
   while (games.length < max) {
-    const page = await authedJson(cursor ? `${base}&cursor=${encodeURIComponent(cursor)}` : base, cookie);
+    const page = await authedJson(
+      cursor ? `${base}&cursor=${encodeURIComponent(cursor)}` : base,
+      cookie
+    );
     if (!page?.data?.length) break;
     games.push(...page.data);
     cursor = page.nextPageCursor;

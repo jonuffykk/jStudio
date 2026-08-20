@@ -1,6 +1,30 @@
-import { $, downloadJson, emit, escapeHtml, fill, icon, on, onState, rememberGroup, savedGroup, setProgress, setStatus, settings, show, showFlex, state } from '../lib.js';
+import {
+  $,
+  downloadJson,
+  emit,
+  escapeHtml,
+  fill,
+  icon,
+  on,
+  onState,
+  rememberGroup,
+  savedGroup,
+  setProgress,
+  setStatus,
+  settings,
+  show,
+  showFlex,
+  state,
+} from '../lib.js';
 import { t } from '../i18n.js';
-import { appendLog, queueSize, renderQueue, resetConsole, showConsole, trackQueue } from './console.js';
+import {
+  appendLog,
+  queueSize,
+  renderQueue,
+  resetConsole,
+  showConsole,
+  trackQueue,
+} from './console.js';
 
 const api = window.jspoofer;
 
@@ -10,12 +34,17 @@ const nextSteps = () => {
     steps.push({ text: t('next.signIn'), cta: t('next.signInCta'), action: 'accounts' });
   }
   if (state.plugin?.supported && !state.plugin.installed) {
-    steps.push({ text: t('next.installPlugin'), cta: t('next.installCta'), action: 'install-plugin' });
+    steps.push({
+      text: t('next.installPlugin'),
+      cta: t('next.installCta'),
+      action: 'install-plugin',
+    });
   } else if (state.pluginUpdate?.hasUpdate) {
-    steps.push({ text: t('next.updatePlugin'), cta: t('next.updateCta'), action: 'install-plugin' });
-  }
-  if (state.account && state.plugin?.installed && !state.studio.connected) {
-    steps.push({ text: t('next.openStudio') });
+    steps.push({
+      text: t('next.updatePlugin'),
+      cta: t('next.updateCta'),
+      action: 'install-plugin',
+    });
   }
   if (settings.downloadOnly && !settings.downloadFolder) {
     steps.push({ text: t('next.pickFolder'), cta: t('next.pickFolderCta'), action: 'pick-folder' });
@@ -40,12 +69,12 @@ export const renderNextSteps = () => {
     container,
     steps
       .map(
-        step => `<div class="mb-1.5 flex items-center gap-2.5 rounded border border-amber-400/40 bg-amber-50 px-3 py-2 text-[11.5px] text-amber-800 last:mb-0 dark:bg-amber-400/10 dark:text-amber-300">
-          ${icon('lightbulb', 'text-amber-500')}
-          <span class="flex-1">${escapeHtml(step.text)}</span>
+        step => `<div class="flex items-center gap-2.5 px-3 py-2">
+          <span class="text-amber-500">${icon('triangle-alert')}</span>
+          <span class="flex-1 text-[11.5px] text-ink dark:text-night-text">${escapeHtml(step.text)}</span>
           ${
             step.action
-              ? `<button class="font-medium underline underline-offset-2 hover:no-underline" data-step="${step.action}">${escapeHtml(step.cta)}</button>`
+              ? `<button class="btn btn-quiet !h-6 !px-2 !text-[11px]" data-step="${step.action}">${escapeHtml(step.cta)}</button>`
               : ''
           }
         </div>`
@@ -60,7 +89,7 @@ export const renderNextSteps = () => {
 
 const renderStudio = () => {
   const { connected, placeName } = state.studio;
-  $('studioDot').className = `h-[7px] w-[7px] shrink-0 rounded-full ${
+  $('studioDot').className = `h-[7px] w-[7px] shrink-0 ${
     connected ? 'bg-emerald-500' : 'bg-ink-faint/50'
   }`;
   $('studioText').textContent = connected
@@ -234,7 +263,10 @@ export const mountHome = () => {
   api.on('run:status', message => setStatus(message, 'busy'));
   api.on('run:progress', ({ done, failed }) => {
     const total = Math.max(queueSize(), done + failed, 1);
-    setProgress(Math.round((done / total) * 100), `${done}/${total}${failed ? ` · ${failed} failed` : ''}`);
+    setProgress(
+      Math.round((done / total) * 100),
+      `${done}/${total}${failed ? ` · ${failed} failed` : ''}`
+    );
   });
   api.on('run:result', finishRun);
 

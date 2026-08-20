@@ -10,7 +10,7 @@ const { boot, broadcast, focusMain } = require('./src/main/windows');
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  if (process.platform === 'win32') app.setAppUserModelId(APP_ID);
+  if (process.platform === 'win32' && app.isPackaged) app.setAppUserModelId(APP_ID);
 
   app.on('second-instance', focusMain);
   app.on('window-all-closed', () => {

@@ -15,10 +15,14 @@ const createWorker = ({ settings, credentials, history, target, signal, report }
     const key = `${entry.creatorType}:${entry.creatorId}`;
     if (!placeIds.has(key)) {
       const found = await retry(
-        () => getPlaceIds(entry.creatorType, entry.creatorId, credentials.cookie, settings.maxPlaceIds),
+        () =>
+          getPlaceIds(entry.creatorType, entry.creatorId, credentials.cookie, settings.maxPlaceIds),
         { attempts: 3, delayMs: 1000, signal }
       ).catch(() => []);
-      placeIds.set(key, found.length ? [...new Set([...found, ...FALLBACK_PLACE_IDS])] : [...FALLBACK_PLACE_IDS]);
+      placeIds.set(
+        key,
+        found.length ? [...new Set([...found, ...FALLBACK_PLACE_IDS])] : [...FALLBACK_PLACE_IDS]
+      );
     }
     const ids = placeIds.get(key);
     if (!settings.overridePlaceId) return ids;
@@ -67,8 +71,16 @@ const createWorker = ({ settings, credentials, history, target, signal, report }
       if (cached?.newId) return report.succeeded(entry, 'cached', { newId: cached.newId });
     }
 
-    const url = await resolveDownloadUrl(entry.id, await placeIdsFor(entry), credentials.cookie, signal);
-    const filePath = path.join(settings.workDir, `${sanitizeFilename(entry.name)}_${entry.id}.rbxm`);
+    const url = await resolveDownloadUrl(
+      entry.id,
+      await placeIdsFor(entry),
+      credentials.cookie,
+      signal
+    );
+    const filePath = path.join(
+      settings.workDir,
+      `${sanitizeFilename(entry.name)}_${entry.id}.rbxm`
+    );
 
     report.log('download', { id: entry.id, name: entry.name });
     const downloaded = await downloadAsset(url, credentials.cookie, filePath, { signal });

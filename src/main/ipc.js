@@ -65,6 +65,25 @@ const startRun = async options => {
   }
 };
 
+const applyRun = async (runId, mode) => {
+  const run = await history.findRun(requireString(runId, 'Run id'));
+  if (!run) throw new Error('That run is no longer in the history');
+  if (!run.mappings.length)
+    throw new Error('That run replaced no IDs, so there is nothing to apply');
+  if (!bridge.isConnected()) {
+    throw new Error('Roblox Studio is not connected. Open your place with the plugin installed.');
+  }
+
+  const revert = mode === 'revert';
+  const lines = run.mappings.map(pair =>
+    revert ? `${pair.to}=${pair.from}` : `${pair.from}=${pair.to}`
+  );
+  bridge.pushMappings(lines, `${run.id}:${revert ? 'revert' : 'apply'}:${Date.now()}`);
+  await history.updateRun(run.id, { applied: !revert });
+
+  return { count: lines.length, applied: !revert };
+};
+
 const uninstall = async () => {
   const localAppData = process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local');
   const installed = await plugin.status();
@@ -73,11 +92,20 @@ const uninstall = async () => {
     path.join(localAppData, 'jSpoofer'),
     path.join(localAppData, 'Programs', 'jSpoofer'),
     path.join(app.getPath('desktop'), 'jSpoofer.lnk'),
-    path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'jSpoofer.lnk'),
+    path.join(
+      app.getPath('appData'),
+      'Microsoft',
+      'Windows',
+      'Start Menu',
+      'Programs',
+      'jSpoofer.lnk'
+    ),
     installed.path,
   ].filter(Boolean);
 
-  await Promise.all(targets.map(target => fs.rm(target, { recursive: true, force: true }).catch(() => {})));
+  await Promise.all(
+    targets.map(target => fs.rm(target, { recursive: true, force: true }).catch(() => {}))
+  );
   app.quit();
   return true;
 };
@@ -97,7 +125,9 @@ const downloadUpdate = async () => {
   }
 
   if (release.checksumUrl) {
-    const expected = await updater.expectedChecksum(release.checksumUrl, release.assetName).catch(() => null);
+    const expected = await updater
+      .expectedChecksum(release.checksumUrl, release.assetName)
+      .catch(() => null);
     if (expected && (await updater.sha256File(destination)) !== expected) {
       await fs.rm(destination, { force: true });
       throw new Error('Checksum mismatch — the download was rejected');
@@ -147,6 +177,7 @@ const register = () => {
   handle('run:start', startRun);
 
   handle('history:runs', history.loadRuns);
+  handle('history:apply', (runId, mode) => applyRun(runId, mode));
   handle('history:clearRuns', async () => {
     await history.clearRuns();
     return true;

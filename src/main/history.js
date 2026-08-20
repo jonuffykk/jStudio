@@ -24,17 +24,28 @@ const fromLegacyMappings = legacy => {
   return { version: store.SCHEMA_VERSION, entries };
 };
 
+const runId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+const normalizeRun = run => ({
+  ...run,
+  id: run.id ?? runId(),
+  mappings: Array.isArray(run.mappings) ? run.mappings : [],
+  applied: run.applied !== false,
+});
+
 const fromLegacyRuns = legacy =>
-  (Array.isArray(legacy) ? legacy : []).map(run => ({
-    startedAt: run.startedAt,
-    finishedAt: run.finishedAt,
-    aborted: !!run.aborted,
-    downloadOnly: !!run.downloadOnly,
-    target: run.downloadOnly ? null : (run.target ?? null),
-    done: run.totalDone ?? 0,
-    failed: run.totalFailed ?? 0,
-    total: run.total ?? 0,
-  }));
+  (Array.isArray(legacy) ? legacy : []).map(run =>
+    normalizeRun({
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt,
+      aborted: !!run.aborted,
+      downloadOnly: !!run.downloadOnly,
+      target: run.downloadOnly ? null : (run.target ?? null),
+      done: run.totalDone ?? 0,
+      failed: run.totalFailed ?? 0,
+      total: run.total ?? 0,
+    })
+  );
 
 const migrateLegacyFiles = async () => {
   await store.adopt(MAPPINGS, 'jspoofer_mappings.json', fromLegacyMappings);
@@ -63,12 +74,25 @@ const clearMappings = () => store.remove(MAPPINGS);
 
 const loadRuns = async () => {
   const runs = await store.read(RUNS, []);
-  return Array.isArray(runs) ? runs : [];
+  return Array.isArray(runs) ? runs.map(normalizeRun) : [];
 };
 
 const recordRun = async entry => {
+  const run = normalizeRun({ ...entry, id: runId() });
   const runs = await loadRuns();
-  await store.write(RUNS, [entry, ...runs].slice(0, RUN.maxRunHistory));
+  await store.write(RUNS, [run, ...runs].slice(0, RUN.maxRunHistory));
+  return run;
+};
+
+const findRun = async id => (await loadRuns()).find(run => run.id === id) ?? null;
+
+const updateRun = async (id, patch) => {
+  const runs = await loadRuns();
+  const index = runs.findIndex(run => run.id === id);
+  if (index < 0) return null;
+  runs[index] = { ...runs[index], ...patch };
+  await store.write(RUNS, runs);
+  return runs[index];
 };
 
 const clearRuns = () => store.remove(RUNS);
@@ -76,10 +100,12 @@ const clearRuns = () => store.remove(RUNS);
 module.exports = {
   clearMappings,
   clearRuns,
+  findRun,
   loadMappings,
   loadRuns,
   mappingKey,
   migrateLegacyFiles,
   recordRun,
   saveMapping,
+  updateRun,
 };

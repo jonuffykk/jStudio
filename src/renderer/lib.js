@@ -140,7 +140,7 @@ const DOT = {
 
 export const setStatus = (message, tone = 'idle') => {
   $('statusText').textContent = message;
-  $('statusDot').className = `relative h-[7px] w-[7px] shrink-0 rounded-full ${DOT[tone]}`;
+  $('statusDot').className = `relative h-[7px] w-[7px] shrink-0 ${DOT[tone]}`;
 };
 
 export const setProgress = (percent, label = '') => {

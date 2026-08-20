@@ -1,6 +1,6 @@
 {
   "name": "jspoofer",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Animation spoofing utility for Roblox Studio",
   "author": "Jonuffy",
   "license": "GPL-3.0-or-later",
@@ -8,8 +8,8 @@
   "scripts": {
     "start": "electron .",
     "plugin": "node scripts/build-plugin.js",
-    "icon": "node scripts/build-icon.mjs",
     "test": "node --test \"test/**/*.test.js\"",
+    "format": "prettier --write .",
     "prebuild": "npm run plugin",
     "build": "electron-builder"
   },
@@ -18,7 +18,8 @@
     "electron": "^42.1.0",
     "electron-builder": "^26.8.1",
     "png-to-ico": "^3.0.2",
-    "pngjs": "^7.0.0"
+    "pngjs": "^7.0.0",
+    "prettier": "^3.9.6"
   },
   "build": {
     "appId": "com.github.jonuffykk.jSpoofer",
@@ -46,8 +47,7 @@
     ],
     "win": {
       "target": "portable",
-      "icon": "assets/logo.ico",
-      "signAndEditExecutable": false
+      "icon": "assets/logo.ico"
     },
     "publish": {
       "provider": "github",

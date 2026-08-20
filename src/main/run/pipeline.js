@@ -58,12 +58,15 @@ class Run {
     this.bridge = bridge;
     this.emit = emit;
     this.controller = new AbortController();
-    this.target = this.settings.groupId ? `group:${this.settings.groupId}` : `user:${credentials.id}`;
+    this.target = this.settings.groupId
+      ? `group:${this.settings.groupId}`
+      : `user:${credentials.id}`;
     this.stopped = false;
     this.pauseGate = null;
     this.done = 0;
     this.failed = 0;
     this.mappings = [];
+    this.pairs = [];
     this.retryPool = new Map();
     this.startedAt = Date.now();
   }
@@ -101,7 +104,14 @@ class Run {
     const succeeded = (entry, kind, extra = {}) => {
       this.done++;
       this.retryPool.delete(entry.id);
-      if (extra.newId) this.mappings.push(`${entry.id}=${extra.newId}`);
+      if (extra.newId) {
+        this.mappings.push(`${entry.id}=${extra.newId}`);
+        this.pairs.push({
+          from: String(entry.id),
+          to: String(extra.newId),
+          name: entry.name ?? '',
+        });
+      }
       this.log(kind, { id: entry.id, name: entry.name, ...extra });
       this.progress();
     };
@@ -115,7 +125,8 @@ class Run {
         this.progress();
       },
       log: (kind, payload) => this.log(kind, payload),
-      cooldown: (entry, seconds) => this.status(`Rate limited — retrying ${entry.name} in ${seconds}s`),
+      cooldown: (entry, seconds) =>
+        this.status(`Rate limited — retrying ${entry.name} in ${seconds}s`),
       stopped: () => this.stopped,
       paused: () => this.pauseGate?.promise ?? Promise.resolve(),
       uploadSlot: semaphore(this.settings.uploadConcurrency),
@@ -125,7 +136,9 @@ class Run {
   async clearWorkDir() {
     await fs.mkdir(this.settings.workDir, { recursive: true });
     const entries = await fs.readdir(this.settings.workDir).catch(() => []);
-    await Promise.all(entries.map(name => fs.rm(path.join(this.settings.workDir, name), { force: true })));
+    await Promise.all(
+      entries.map(name => fs.rm(path.join(this.settings.workDir, name), { force: true }))
+    );
   }
 
   async scanAndProcess(processEntry) {
@@ -149,7 +162,10 @@ class Run {
     };
 
     this.bridge.on('scan', onScan);
-    this.bridge.requestScan({ useInstanceNames: this.settings.autoName, selectedOnly: this.settings.selectedOnly });
+    this.bridge.requestScan({
+      useInstanceNames: this.settings.autoName,
+      selectedOnly: this.settings.selectedOnly,
+    });
 
     const deadline = Date.now() + RUN.scanTimeoutMs;
     const drain = async () => {
@@ -191,7 +207,9 @@ class Run {
 
   async execute() {
     if (!this.bridge.isConnected()) {
-      throw new RunError('Roblox Studio is not connected. Open your place with the plugin installed.');
+      throw new RunError(
+        'Roblox Studio is not connected. Open your place with the plugin installed.'
+      );
     }
 
     await this.clearWorkDir();
@@ -227,6 +245,8 @@ class Run {
       done: this.done,
       failed: this.failed,
       total,
+      mappings: this.pairs,
+      applied: !this.settings.downloadOnly && this.pairs.length > 0,
     }).catch(() => {});
 
     return {

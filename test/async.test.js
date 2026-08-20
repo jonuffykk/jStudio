@@ -64,5 +64,8 @@ test('retry resolves as soon as the call succeeds', async () => {
 test('retry stops immediately once the signal aborts', async () => {
   const controller = new AbortController();
   controller.abort();
-  await assert.rejects(retry(() => 'never', { signal: controller.signal }), Aborted);
+  await assert.rejects(
+    retry(() => 'never', { signal: controller.signal }),
+    Aborted
+  );
 });

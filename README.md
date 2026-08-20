@@ -45,19 +45,19 @@ npm run build    # package the portable Windows binary
 
 ### Layout
 
-| Path | What lives there |
-| --- | --- |
-| `main.js` | Entry point: single-instance lock, data migration, boot order |
-| `preload.js` | The whole IPC surface, exposed to the page as `window.jspoofer` |
-| `src/main/bridge.js` | Local HTTP server the Studio plugin polls |
-| `src/main/run/` | `pipeline.js` validates and orchestrates a run, `worker.js` handles one animation |
-| `src/main/roblox/` | `api.js` (parsing, users, groups, places) and `assets.js` (download, upload, rate limits) |
-| `src/main/vault.js` | Credentials, encrypted through the OS keychain |
-| `src/main/history.js` | ID cache and run history on disk |
-| `src/main/lib.js` | Retry, semaphore, abort helpers and atomic JSON writes |
-| `src/renderer/views/` | One module per screen — home, console, accounts, settings, history |
-| `src/renderer/lib.js` | DOM helpers, saved preferences, shared state and the status bar |
-| `src/plugin/plugin.lua` | The Studio plugin, packed into `dist/*.rbxmx` by `npm run plugin` |
+| Path                    | What lives there                                                                          |
+| ----------------------- | ----------------------------------------------------------------------------------------- |
+| `main.js`               | Entry point: single-instance lock, data migration, boot order                             |
+| `preload.js`            | The whole IPC surface, exposed to the page as `window.jspoofer`                           |
+| `src/main/bridge.js`    | Local HTTP server the Studio plugin polls                                                 |
+| `src/main/run/`         | `pipeline.js` validates and orchestrates a run, `worker.js` handles one animation         |
+| `src/main/roblox/`      | `api.js` (parsing, users, groups, places) and `assets.js` (download, upload, rate limits) |
+| `src/main/vault.js`     | Credentials, encrypted through the OS keychain                                            |
+| `src/main/history.js`   | ID cache and run history on disk                                                          |
+| `src/main/lib.js`       | Retry, semaphore, abort helpers and atomic JSON writes                                    |
+| `src/renderer/views/`   | One module per screen — home, console, accounts, settings, history                        |
+| `src/renderer/lib.js`   | DOM helpers, saved preferences, shared state and the status bar                           |
+| `src/plugin/plugin.lua` | The Studio plugin, packed into `dist/*.rbxmx` by `npm run plugin`                         |
 
 ## Links
 

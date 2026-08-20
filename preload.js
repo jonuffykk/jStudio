@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld('jspoofer', {
   },
   history: {
     runs: () => call('history:runs'),
+    apply: (runId, mode) => call('history:apply', runId, mode),
     clearRuns: () => call('history:clearRuns'),
     clearMappings: () => call('history:clearMappings'),
   },

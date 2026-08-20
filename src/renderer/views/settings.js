@@ -1,4 +1,22 @@
-import { $, closeModal, emit, escapeHtml, fill, formatBytes, icon, on, openModal, rememberLanguage, resetSettings, setStatus, settings, show, showFlex, state, updateSettings } from '../lib.js';
+import {
+  $,
+  closeModal,
+  emit,
+  escapeHtml,
+  fill,
+  formatBytes,
+  icon,
+  on,
+  openModal,
+  rememberLanguage,
+  resetSettings,
+  setStatus,
+  settings,
+  show,
+  showFlex,
+  state,
+  updateSettings,
+} from '../lib.js';
 import { setLanguage, t, translateDom } from '../i18n.js';
 
 const api = window.jspoofer;
@@ -83,9 +101,9 @@ const mountUpdates = () => {
 };
 
 const NOTICE = {
-  info: 'mb-2.5 rounded bg-paper px-2.5 py-2 font-mono text-[11px] text-ink-faint dark:bg-night',
-  warn: 'mb-2.5 rounded bg-amber-400/10 px-2.5 py-2 text-[11.5px] text-amber-700 dark:text-amber-300',
-  bad: 'mb-2.5 rounded bg-red-500/10 px-2.5 py-2 text-[11.5px] text-red-600 dark:text-red-400',
+  info: 'mb-2.5 bg-paper px-2.5 py-2 num text-[11px] text-ink-faint dark:text-night-faint dark:bg-night',
+  warn: 'mb-2.5 bg-amber-400/10 px-2.5 py-2 text-[11.5px] text-amber-700 dark:text-amber-300',
+  bad: 'mb-2.5 bg-red-500/10 px-2.5 py-2 text-[11.5px] text-red-600 dark:text-red-400',
 };
 
 export const applyTheme = () => {
@@ -143,8 +161,15 @@ export const refreshPlugin = async () => {
     return;
   }
 
-  const action = update?.hasUpdate ? 'plugin.update' : status.installed ? 'plugin.reinstall' : 'plugin.install';
-  fill(button, `${icon(status.installed ? 'refresh-cw' : 'download')}<span>${escapeHtml(t(action))}</span>`);
+  const action = update?.hasUpdate
+    ? 'plugin.update'
+    : status.installed
+      ? 'plugin.reinstall'
+      : 'plugin.install';
+  fill(
+    button,
+    `${icon(status.installed ? 'refresh-cw' : 'download')}<span>${escapeHtml(t(action))}</span>`
+  );
 
   if (update?.hasUpdate) {
     notice.className = NOTICE.warn;
@@ -167,7 +192,10 @@ export const installPlugin = async () => {
   button.disabled = true;
   try {
     const result = await api.plugin.install();
-    setStatus(result.ok ? t('plugin.installed') : (result.error ?? t('plugin.installFailed')), result.ok ? 'ok' : 'bad');
+    setStatus(
+      result.ok ? t('plugin.installed') : (result.error ?? t('plugin.installFailed')),
+      result.ok ? 'ok' : 'bad'
+    );
   } finally {
     button.disabled = false;
     await refreshPlugin();
