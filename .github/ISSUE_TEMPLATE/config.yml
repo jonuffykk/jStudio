@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Discord support
+    url: https://discord.gg/CNSZssFz23
+    about: Ask usage questions here instead of opening an issue.

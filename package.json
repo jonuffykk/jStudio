@@ -1,35 +1,38 @@
 {
-  "name": "jonuffyspoofer",
-  "version": "1.6.2",
-  "main": "main.js",
-  "description": "Animation spoofing utility for Roblox",
+  "name": "jspoofer",
+  "version": "2.0.0",
+  "description": "Animation spoofing utility for Roblox Studio",
   "author": "Jonuffy",
   "license": "GPL-3.0-or-later",
+  "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder",
-    "plugin": "node scripts/builder.js",
-    "test": "node --test scripts/unit.test.js"
+    "plugin": "node scripts/build-plugin.js",
+    "icon": "node scripts/build-icon.mjs",
+    "test": "node --test \"test/**/*.test.js\"",
+    "prebuild": "npm run plugin",
+    "build": "electron-builder"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.3",
     "electron": "^42.1.0",
     "electron-builder": "^26.8.1",
-    "@electron/rebuild": "^4.0.3"
+    "png-to-ico": "^3.0.2",
+    "pngjs": "^7.0.0"
   },
   "build": {
-    "appId": "com.github.jonuffykk.JonuffySpoofer",
-    "productName": "Jonuffy Spoofer",
+    "appId": "com.github.jonuffykk.jSpoofer",
+    "productName": "jSpoofer",
+    "artifactName": "jSpoofer-${version}.${ext}",
+    "forceCodeSigning": false,
     "files": [
       "main.js",
       "preload.js",
-      "index.html",
-      "modules/**/*",
+      "src/main/**/*",
+      "src/renderer/**/*",
       "assets/**/*",
-      "build/**/*",
       "package.json",
       "!**/.git/**/*",
-      "!**/node_modules/.cache/**/*",
-      "!downloads/**/*",
       "!dist/**/*"
     ],
     "directories": {
@@ -37,8 +40,8 @@
     },
     "extraResources": [
       {
-        "from": "dist/JonuffySpoofer-v${version}.rbxmx",
-        "to": "JonuffySpoofer-v${version}.rbxmx"
+        "from": "dist/jSpoofer-v${version}.rbxmx",
+        "to": "jSpoofer-v${version}.rbxmx"
       }
     ],
     "win": {
@@ -46,12 +49,10 @@
       "icon": "assets/logo.ico",
       "signAndEditExecutable": false
     },
-    "artifactName": "JonuffySpoofer-${version}.${ext}",
-    "forceCodeSigning": false,
     "publish": {
       "provider": "github",
       "owner": "jonuffykk",
-      "repo": "JonuffySpoofer"
+      "repo": "jSpoofer"
     }
   }
 }
