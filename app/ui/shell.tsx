@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { accounts as accountsApi, appWindow, plugin as pluginApi } from '@/app/lib/ipc'
 import { play, unlockAudio } from '@/app/lib/sfx'
 import { useStore, type View } from '@/app/lib/state'
-import { Confirm, Icon, IconButton, cx } from '@/app/ui/primitives'
+import { Button, Confirm, Icon, IconButton, cx } from '@/app/ui/primitives'
 import { OnboardingView } from '@/app/views/onboarding'
 import { HomeView } from '@/app/views/home'
 import { BuildView } from '@/app/views/build'
@@ -59,7 +59,7 @@ export function Shell() {
         return
       }
       if (browserKeys.has(key)) event.preventDefault()
-      if (state.blockers().length > 0) return
+      if (!state.settings.onboarded) return
 
       const views: View[] = ['home', 'build', 'spoof']
       const view = views[Number(key) - 1]
@@ -119,7 +119,7 @@ export function Shell() {
 
   if (!store.booted) return <Splash />
 
-  const blocked = store.blockers().length > 0
+  const blocked = !store.settings.onboarded
 
   return (
     <div className="flex h-screen flex-col bg-bg text-text">
@@ -135,10 +135,18 @@ export function Shell() {
               <HomeView />
             </Pane>
             <Pane active={store.view === 'build'}>
-              <BuildView />
+              {store.aiReady() ? <BuildView /> : <StillNeeded need="build" />}
             </Pane>
             <Pane active={store.view === 'spoof'}>
-              <SpoofView />
+              {store.robloxReady() ? (
+                store.cloudReady() ? (
+                  <SpoofView />
+                ) : (
+                  <StillNeeded need="cloud" />
+                )
+              ) : (
+                <StillNeeded need="animations" />
+              )}
             </Pane>
           </main>
         </div>
@@ -574,6 +582,42 @@ function Toasts() {
           <Icon name="close" className="mt-0.5 size-3.5 shrink-0 text-faint" />
         </button>
       ))}
+    </div>
+  )
+}
+
+/**
+ * Half of jStudio needs a model key, the other half needs a Roblox account, and
+ * nobody should have to hand over both to use one of them. Whichever half was
+ * left unconfigured says so here, and opens exactly the panel that fixes it.
+ */
+function StillNeeded({ need }: { need: 'build' | 'animations' | 'cloud' }) {
+  const store = useStore()
+  const { t } = store
+
+  const copy = {
+    build: { icon: 'spark', title: 'gate.buildTitle', body: 'gate.buildBody', action: 'gate.buildAction' },
+    animations: {
+      icon: 'user',
+      title: 'gate.animationsTitle',
+      body: 'gate.animationsBody',
+      action: 'gate.animationsAction',
+    },
+    cloud: { icon: 'key', title: 'gate.cloudTitle', body: 'gate.cloudBody', action: 'gate.cloudAction' },
+  }[need] as { icon: string; title: MessageKey; body: MessageKey; action: MessageKey }
+
+  return (
+    <div className="flex h-full items-center justify-center px-6">
+      <div className="flex max-w-sm flex-col items-center gap-3 text-center">
+        <span className="flex size-11 items-center justify-center rounded-full bg-accent-soft">
+          <Icon name={copy.icon} className="size-5 text-accent" />
+        </span>
+        <h2 className="text-sm font-semibold">{t(copy.title)}</h2>
+        <p className="text-[13px] text-dim">{t(copy.body)}</p>
+        <Button tone="primary" onClick={() => store.setModal(need === 'build' ? 'settings' : 'accounts')}>
+          {t(copy.action)}
+        </Button>
+      </div>
     </div>
   )
 }

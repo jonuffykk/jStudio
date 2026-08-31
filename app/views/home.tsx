@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { plugin as pluginApi } from '@/app/lib/ipc'
 import { installUpdate } from '@/app/lib/updates'
+import { findProvider } from '@/app/lib/providers'
 import { play } from '@/app/lib/sfx'
 import { useStore } from '@/app/lib/state'
 import { Button, Icon, Panel, Skeleton, Spinner, cx } from '@/app/ui/primitives'
@@ -134,7 +135,9 @@ export function HomeView() {
 
                   <Row
                     icon="user"
-                    tone={account?.hasApiKey ? 'ok' : 'warn'}
+                    tone={
+                      account?.hasApiKey ? 'ok' : settings.intent.includes('animations') ? 'warn' : 'neutral'
+                    }
                     label={t('home.account')}
                     value={account?.name ?? t('status.noAccount')}
                     detail={account ? `@${account.username}` : ''}
@@ -150,7 +153,7 @@ export function HomeView() {
                     tone="accent"
                     label={t('home.model')}
                     value={settings.model || '—'}
-                    detail={`${settings.providerId} · ${effortLabel}`}
+                    detail={`${findProvider(settings.providerId).label} · ${effortLabel}`}
                     action={
                       <Button size="sm" onClick={() => store.setModal('settings')}>
                         {t('common.open')}

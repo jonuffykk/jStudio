@@ -216,9 +216,10 @@ export type UsagePulse = z.infer<typeof usagePulse>
 
 export const settings = z.object({
   language: z.enum(['en', 'pt', 'es']).default('en'),
-  theme: z.enum(['dark', 'light']).default('dark'),
+  theme: z.enum(['dark', 'light', 'system']).default('light'),
+  languagePicked: z.boolean().default(false),
   providerId: z
-    .enum(['anthropic', 'openai', 'groq', 'openrouter', 'ollama', 'custom'])
+    .enum(['anthropic', 'openai', 'bai', 'groq', 'openrouter', 'ollama', 'custom'])
     .default('anthropic'),
   model: z.string().max(160).default(''),
   customBaseUrl: z.string().max(300).default(''),
@@ -231,7 +232,7 @@ export const settings = z.object({
   customInstructions: z.string().max(4000).default(''),
   memory: memoryStore.default(memoryStore.parse({})),
   useChatHistory: z.boolean().default(true),
-  contextLimit: z.number().int().min(8_000).max(4_000_000).default(1_000_000),
+  contextLimit: z.number().int().min(8_000).max(4_000_000).default(500_000),
   agents: z.array(agentProfile).default(defaultAgents),
   usageLog: z.array(usageDay).default([]),
   usagePulse: z.array(usagePulse).default([]),
@@ -240,6 +241,8 @@ export const settings = z.object({
   mcpServers: z.array(mcpServer).default([]),
   skills: z.array(skill).default([]),
   spoof: spoofOptions.default(spoofOptions.parse({})),
+  onboarded: z.boolean().default(false),
+  intent: z.array(z.enum(['build', 'animations'])).default([]),
 })
 export type Settings = z.infer<typeof settings>
 
@@ -313,6 +316,14 @@ export const chatMessage = z.object({
 })
 export type ChatMessage = z.infer<typeof chatMessage>
 
+export const chatUsage = z.object({
+  input: z.number().default(0),
+  output: z.number().default(0),
+  calls: z.number().default(0),
+  lastInput: z.number().default(0),
+})
+export type ChatUsage = z.infer<typeof chatUsage>
+
 export const conversation = z.object({
   id: z.string(),
   title: z.string(),
@@ -320,5 +331,6 @@ export const conversation = z.object({
   pinned: z.boolean().default(false),
   archived: z.boolean().default(false),
   messages: z.array(chatMessage).default([]),
+  usage: chatUsage.default(chatUsage.parse({})),
 })
 export type Conversation = z.infer<typeof conversation>

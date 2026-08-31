@@ -637,7 +637,7 @@ export function Ring({
           strokeDashoffset={circumference * (1 - share)}
         />
       </svg>
-      <span className="text-[11px] text-faint">{label}</span>
+      {label ? <span className="text-[11px] text-faint">{label}</span> : null}
     </span>
   )
 }

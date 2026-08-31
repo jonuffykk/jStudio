@@ -1,8 +1,9 @@
 'use client'
 
 import { useState } from 'react'
-import { accounts as accountsApi, openExternal } from '@/app/lib/ipc'
+import { accounts as accountsApi } from '@/app/lib/ipc'
 import { useStore } from '@/app/lib/state'
+import { CloudKeyGuide } from '@/app/views/onboarding'
 import { Badge, Button, Confirm, Field, Icon, IconButton, Input, Modal, Spinner, cx } from '@/app/ui/primitives'
 
 type Stage = 'list' | 'signIn' | 'key'
@@ -14,7 +15,6 @@ export function AccountsModal() {
   const [stage, setStage] = useState<Stage>('list')
   const [pending, setPending] = useState<string | null>(null)
   const [editing, setEditing] = useState<string | null>(null)
-  const [keyDraft, setKeyDraft] = useState('')
   const [cookie, setCookie] = useState('')
   const [working, setWorking] = useState(false)
   const [removing, setRemoving] = useState<string | null>(null)
@@ -37,14 +37,7 @@ export function AccountsModal() {
     await store.refreshAccounts()
     const id = useStore.getState().activeAccountId
     setPending(id)
-    setKeyDraft('')
     setStage(useStore.getState().accounts.find((entry) => entry.id === id)?.hasApiKey ? 'list' : 'key')
-  }
-
-  const saveKey = async (id: string, value: string) => {
-    const ok = await run(() => accountsApi.setApiKey(id, value))
-    if (ok) store.toast(t('accounts.keyStored'), 'ok')
-    return ok
   }
 
   return (
@@ -92,10 +85,7 @@ export function AccountsModal() {
                     <IconButton
                       icon="key"
                       title={t('accounts.keyFor')}
-                      onClick={() => {
-                        setEditing(editing === account.id ? null : account.id)
-                        setKeyDraft('')
-                      }}
+                      onClick={() => setEditing(editing === account.id ? null : account.id)}
                     />
                     <IconButton
                       icon="trash"
@@ -107,30 +97,7 @@ export function AccountsModal() {
 
                   {editing === account.id ? (
                     <div className="border-t border-line p-3">
-                      <Field label={t('accounts.keyFor')}>
-                        <div className="flex gap-2">
-                          <Input type="password" value={keyDraft} onChange={setKeyDraft} placeholder="•••••" mono />
-                          <IconButton
-                            icon="external"
-                            title={t('accounts.getApiKey')}
-                            onClick={() => void openExternal('https://create.roblox.com/dashboard/credentials')}
-                          />
-                          {working ? (
-                            <span className="flex size-8 items-center justify-center">
-                              <Spinner />
-                            </span>
-                          ) : (
-                            <IconButton
-                              icon="check"
-                              title={t('common.save')}
-                              disabled={!keyDraft.trim()}
-                              onClick={async () => {
-                                if (await saveKey(account.id, keyDraft.trim())) setEditing(null)
-                              }}
-                            />
-                          )}
-                        </div>
-                      </Field>
+                      <CloudKeyGuide accountId={account.id} done={account.hasApiKey} />
                     </div>
                   ) : null}
                 </li>
@@ -222,31 +189,9 @@ export function AccountsModal() {
           ) : (
             <>
               <h3 className="text-sm font-semibold">{t('accounts.keyStep')}</h3>
-
-              <Field label={t('accounts.keyFor')}>
-                <div className="flex gap-2">
-                  <Input type="password" value={keyDraft} onChange={setKeyDraft} placeholder="•••••" mono />
-                  <IconButton
-                    icon="external"
-                    title={t('accounts.getApiKey')}
-                    onClick={() => void openExternal('https://create.roblox.com/dashboard/credentials')}
-                  />
-                  {working ? (
-                    <span className="flex size-8 items-center justify-center">
-                      <Spinner />
-                    </span>
-                  ) : (
-                    <IconButton
-                      icon="check"
-                      title={t('common.save')}
-                      disabled={!keyDraft.trim() || !pending}
-                      onClick={async () => {
-                        if (pending && (await saveKey(pending, keyDraft.trim()))) setStage('list')
-                      }}
-                    />
-                  )}
-                </div>
-              </Field>
+              {pending ? (
+                <CloudKeyGuide accountId={pending} done={false} onSaved={() => setStage('list')} />
+              ) : null}
             </>
           )}
         </div>

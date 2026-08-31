@@ -3,11 +3,11 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { runAgent, type AgentEvent } from '@/app/lib/agent'
+import { basePrompt, builtinToolsSize, runAgent, toolDefinitionSize, type AgentEvent } from '@/app/lib/agent'
 import { applyAction, studioMcp } from '@/app/lib/apply'
 import { describeError, groupModels, isFreeModel, resolveEndpoint, streamChat, type Endpoint } from '@/app/lib/llm'
 import { spoof as spoofApi } from '@/app/lib/ipc'
-import { findProvider } from '@/app/lib/providers'
+import { findProvider, supportsVision } from '@/app/lib/providers'
 import { play } from '@/app/lib/sfx'
 import { useStore } from '@/app/lib/state'
 import {
@@ -15,6 +15,7 @@ import {
   type Action,
   type AgentStep,
   type ChatMessage,
+  type ChatUsage,
   type Conversation,
   type Skill,
 } from '@/app/lib/schemas'
@@ -40,10 +41,10 @@ import type { MessageKey } from '@/app/lib/i18n'
 
 type Bubble = ChatMessage & { streaming?: boolean }
 type ActionState = 'pending' | 'applying' | 'applied' | 'failed'
-type Outgoing = { text: string; images: string[]; forced: string[] }
 
 const newId = () => `chat${Date.now()}`
 const MAX_IMAGES = 4
+const noSpend: ChatUsage = { input: 0, output: 0, calls: 0, lastInput: 0 }
 const DAY = 86_400_000
 
 const modeLabels: Record<'manual' | 'auto' | 'plan', MessageKey> = {
@@ -114,7 +115,7 @@ function compact(value: number): string {
  * its whole allowance before the first visible token, and the old fifteen second cap turned every
  * such run into the fallback, which is why chats ended up named after the message.
  */
-async function generateTitle(endpoint: Endpoint, prompt: string): Promise<string> {
+async function generateTitle(endpoint: Endpoint, prompt: string, onSpend?: Spend): Promise<string> {
   const fallback = prompt.trim().replace(/\s+/g, ' ').slice(0, 24)
 
   try {
@@ -133,7 +134,10 @@ async function generateTitle(endpoint: Endpoint, prompt: string): Promise<string
       AbortSignal.timeout(45_000)
     )
 
-    for await (const delta of stream) if (delta.type === 'text') text += delta.text
+    for await (const delta of stream) {
+      if (delta.type === 'usage') onSpend?.(delta.inputTokens, delta.outputTokens)
+      else if (delta.type === 'text') text += delta.text
+    }
 
     const title = text
       .replace(/<think>[\s\S]*?<\/think>/gi, '')
@@ -148,12 +152,15 @@ async function generateTitle(endpoint: Endpoint, prompt: string): Promise<string
   }
 }
 
+type Spend = (input: number, output: number) => void
+
 async function advise(
   endpoint: Endpoint,
   role: string,
   question: string,
   signal: AbortSignal,
-  onDelta?: (text: string) => void
+  onDelta?: (text: string) => void,
+  onSpend?: Spend
 ): Promise<string> {
   try {
     let text = ''
@@ -174,6 +181,7 @@ point. No preamble, no closing remark, no restating the question.`,
     )
 
     for await (const delta of stream) {
+      if (delta.type === 'usage') onSpend?.(delta.inputTokens, delta.outputTokens)
       if (delta.type !== 'text') continue
       text += delta.text
       onDelta?.(delta.text)
@@ -244,8 +252,7 @@ export function BuildView() {
   const [images, setImages] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [runningChat, setRunningChat] = useState<string | null>(null)
-  const [queue, setQueue] = useState<Outgoing[]>([])
-  const [usage, setUsage] = useState({ input: 0, output: 0 })
+  const [usage, setUsage] = useState(noSpend)
   const usageRef = useRef(usage)
   const [states, setStates] = useState<Record<string, ActionState>>({})
   const [showArchived, setShowArchived] = useState(false)
@@ -266,12 +273,12 @@ export function BuildView() {
   // so leaving a chat mid answer neither kills it nor spills its messages into the next one.
   const runningIn = useRef<string | null>(null)
   const parked = useRef(new Map<string, Bubble[]>())
-  const queues = useRef(new Map<string, Outgoing[]>())
-  const usages = useRef(new Map<string, { input: number; output: number }>())
+  const usages = useRef(new Map<string, ChatUsage>())
   const known = useRef(new Set<string>())
   const discarded = useRef(new Set<string>())
 
   const provider = findProvider(settings.providerId)
+  const sighted = supportsVision(settings.model)
 
   const endpoint = useMemo(
     () =>
@@ -285,6 +292,11 @@ export function BuildView() {
       }),
     [settings.providerId, settings.customBaseUrl, apiKey, settings.model, settings.temperature, settings.effort]
   )
+
+  // Switching to a text-only model empties the tray, so nothing is sent that the model cannot read.
+  useEffect(() => {
+    if (!sighted) setImages([])
+  }, [sighted])
 
   /**
    * The messages of any conversation: the live list when it is on screen, the parked copy while a
@@ -313,6 +325,26 @@ export function BuildView() {
     [commitTo]
   )
 
+  /** Books one provider call against the chat that caused it, and against the day. */
+  const bank = useCallback((id: string, input: number, output: number) => {
+    if (input <= 0 && output <= 0) return
+
+    const banked = usages.current.get(id) ?? noSpend
+    const next = {
+      input: banked.input + input,
+      output: banked.output + output,
+      calls: banked.calls + 1,
+      lastInput: input > 0 ? input : banked.lastInput,
+    }
+    usages.current.set(id, next)
+
+    if (id === conversationIdRef.current) {
+      usageRef.current = next
+      setUsage(next)
+    }
+    useStore.getState().recordUsage(input, output)
+  }, [])
+
   const persistTo = useCallback(
     (id: string, title?: string) => {
       // A conversation deleted mid answer must not be written back by the run still finishing it.
@@ -328,6 +360,7 @@ export function BuildView() {
         updatedAt: Date.now(),
         pinned: existing?.pinned ?? false,
         archived: existing?.archived ?? false,
+        usage: usages.current.get(id) ?? existing?.usage ?? noSpend,
         messages: list.map(({ streaming: _streaming, ...rest }) => rest),
       })
     },
@@ -345,7 +378,7 @@ export function BuildView() {
 
   /** Hands the visible chat over to the background and brings the target one forward. */
   const switchTo = useCallback(
-    (id: string, messages: Bubble[] | null) => {
+    (id: string, messages: Bubble[] | null, spent?: ChatUsage) => {
       const leaving = conversationIdRef.current
       if (leaving === id) return
 
@@ -361,11 +394,10 @@ export function BuildView() {
       listRef.current = restored
       setMessages(restored)
 
-      const usage = usages.current.get(id) ?? { input: 0, output: 0 }
+      const usage = usages.current.get(id) ?? spent ?? noSpend
       usageRef.current = usage
       setUsage(usage)
 
-      setQueue([...(queues.current.get(id) ?? [])])
       setBusy(runningIn.current === id)
       setStates({})
       setImages([])
@@ -380,7 +412,7 @@ export function BuildView() {
   const openChat = useCallback(
     (conversation: Conversation) => {
       if (conversation.id === conversationIdRef.current) return
-      switchTo(conversation.id, conversation.messages)
+      switchTo(conversation.id, conversation.messages, conversation.usage)
       useStore.getState().visitChat(conversation.id)
     },
     [switchTo]
@@ -400,7 +432,7 @@ export function BuildView() {
     known.current = ids
 
     const live = new Set([...ids, conversationIdRef.current, ...(running ? [running] : [])])
-    for (const store of [parked.current, queues.current, usages.current]) {
+    for (const store of [parked.current, usages.current]) {
       for (const id of store.keys()) if (!live.has(id)) store.delete(id)
     }
   }, [conversations])
@@ -433,6 +465,10 @@ export function BuildView() {
   }, [])
 
   const addImages = async (files: FileList | File[]) => {
+    if (!sighted) {
+      store.toast(t('build.attachBlind', { model: settings.model }))
+      return
+    }
     const picked = [...files].filter((file) => file.type.startsWith('image/')).slice(0, MAX_IMAGES)
     const encoded = await Promise.all(picked.map(readImage))
     setImages((current) => [...current, ...encoded].slice(0, MAX_IMAGES))
@@ -528,7 +564,8 @@ export function BuildView() {
                   steps: entry.steps.map((step, index) =>
                     index === at ? { ...step, text: step.text + delta } : step
                   ),
-                }))
+                })),
+              (input, output) => bank(target, input, output)
             )
 
             if (!note) {
@@ -597,6 +634,7 @@ export function BuildView() {
               void apply(event.action, `${index}:${position}`)
             }
           }
+          else if (event.type === 'notice') store.toast(event.text)
           else if (event.type === 'question')
             update((entry) => ({ ...entry, questions: event.questions }))
           else if (event.type === 'plan')
@@ -619,19 +657,7 @@ export function BuildView() {
               ],
             }))
           }
-          else if (event.type === 'usage') {
-            const banked = usages.current.get(target) ?? { input: 0, output: 0 }
-            const next = {
-              input: banked.input + event.inputTokens,
-              output: banked.output + event.outputTokens,
-            }
-            usages.current.set(target, next)
-            if (target === conversationIdRef.current) {
-              usageRef.current = next
-              setUsage(next)
-            }
-            store.recordUsage(event.inputTokens, event.outputTokens)
-          }
+          else if (event.type === 'usage') bank(target, event.inputTokens, event.outputTokens)
         }
         play('done', settings.sounds)
         if (
@@ -667,29 +693,15 @@ export function BuildView() {
       const dropped = discarded.current.delete(target)
       if (dropped) {
         parked.current.delete(target)
-        queues.current.delete(target)
         usages.current.delete(target)
       } else {
         const first = history.find((entry) => entry.role === 'user')?.content ?? 'Chat'
         const existing = useStore.getState().conversations.find((entry) => entry.id === target)
-        persistTo(target, existing?.title ?? (await generateTitle(endpoint, first)))
-      }
-
-      // The chat that was running gets its own backlog first; a message typed into another chat
-      // while it worked starts as soon as this one is out of the way.
-      const pending =
-        !dropped && (queues.current.get(target)?.length ?? 0) > 0
-          ? target
-          : [...queues.current.entries()].find(([, items]) => items.length > 0)?.[0]
-
-      if (!pending) return
-      const items = queues.current.get(pending) ?? []
-      const next = items.shift()
-      queues.current.set(pending, items)
-      if (pending === conversationIdRef.current) setQueue([...items])
-
-      if (next) {
-        await run([...listOf(pending), bubble('user', next.text, next.images)], next.forced, pending)
+        persistTo(
+          target,
+          existing?.title ??
+            (await generateTitle(endpoint, first, (input, output) => bank(target, input, output)))
+        )
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -775,10 +787,8 @@ export function BuildView() {
           ])
         }
 
-        const cleared = { input: 0, output: 0 }
-        usages.current.set(conversationIdRef.current, cleared)
-        usageRef.current = cleared
-        setUsage(cleared)
+        // Compressing frees the context, which the ring reads from the folded
+        // messages on its own. What the chat already spent stays spent.
         play('done', settings.sounds)
         persist()
       } catch (error) {
@@ -799,7 +809,15 @@ export function BuildView() {
     return true
   }
 
+  // A run belongs to one chat; the others wait rather than pretending they can send.
+  const elsewhere = runningChat !== null && runningChat !== conversationId
+
   const send = useCallback(() => {
+    if (runningRef.current) {
+      useStore.getState().toast(t('build.oneAtATime'))
+      return
+    }
+
     const text = draft.trim()
     if (!text && images.length === 0) return
 
@@ -821,14 +839,6 @@ export function BuildView() {
     setImages([])
     play('send', settings.sounds)
     jump()
-
-    if (runningRef.current) {
-      const here = conversationIdRef.current
-      const items = [...(queues.current.get(here) ?? []), payload]
-      queues.current.set(here, items)
-      setQueue(items)
-      return
-    }
 
     void run([...listRef.current, bubble('user', payload.text, payload.images)], payload.forced)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -881,6 +891,7 @@ export function BuildView() {
       updatedAt: Date.now(),
       pinned: false,
       archived: false,
+      usage: noSpend,
       messages: slice.map(({ streaming: _streaming, ...rest }) => rest),
     })
     switchTo(id, slice)
@@ -894,6 +905,11 @@ export function BuildView() {
 
   const slices: Slice[] = [
     {
+      label: t('build.sliceSystem'),
+      tokens: estimate(basePrompt),
+      className: 'bg-accent/40',
+    },
+    {
       label: t('build.sliceMessages'),
       tokens: messages
         .filter((entry) => !entry.folded)
@@ -906,15 +922,19 @@ export function BuildView() {
       className: 'bg-accent/60',
     },
     {
+      // A tool costs its whole schema, not just its name and description.
       label: t('build.sliceTools'),
       tokens:
-        1200 +
+        builtinToolsSize() +
         mcp.reduce(
           (sum, connection) =>
             sum +
-            connection.tools.reduce(
-              (inner, tool) => inner + estimate(tool.name + (tool.description ?? '')),
-              0
+            toolDefinitionSize(
+              connection.tools.map((tool) => ({
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.inputSchema,
+              }))
             ),
           0
         ),
@@ -1055,15 +1075,6 @@ export function BuildView() {
               ))
             )}
 
-            {queue.map((entry, index) => (
-              <div key={index} className="flex justify-end">
-                <p className="max-w-[85%] rounded-[var(--radius-panel)] border border-dashed border-line px-4 py-2.5 text-sm text-faint">
-                  {entry.text}
-                  <span className="ml-2 text-xs">· {t('build.queued')}</span>
-                </p>
-              </div>
-            ))}
-
             <div ref={bottom} />
 
             <Confirm
@@ -1175,7 +1186,12 @@ export function BuildView() {
                     event.target.value = ''
                   }}
                 />
-                <IconButton icon="image" title={t('build.attach')} onClick={() => fileInput.current?.click()} />
+                <IconButton
+                  icon="image"
+                  title={sighted ? t('build.attach') : t('build.attachBlind', { model: settings.model })}
+                  disabled={!sighted}
+                  onClick={() => fileInput.current?.click()}
+                />
 
                 <ModelPicker open={modelOpen} onOpenChange={setModelOpen} />
 
@@ -1215,17 +1231,17 @@ export function BuildView() {
 
                 <span className="ml-auto flex items-center gap-1">
                   <UsagePill usage={usage} slices={slices} />
-                  {busy ? (
-                    <IconButton icon="stop" title={t('build.stop')} onClick={() => abort.current?.abort()} />
-                  ) : null}
                   <button
                     type="button"
-                    title={t('build.send')}
-                    disabled={!draft.trim() && images.length === 0}
-                    onClick={send}
-                    className="flex size-8 items-center justify-center rounded-[var(--radius-control)] bg-accent text-white transition-colors hover:bg-accent-hover disabled:pointer-events-none disabled:opacity-40"
+                    title={busy ? t('build.stop') : elsewhere ? t('build.oneAtATime') : t('build.send')}
+                    disabled={!busy && (elsewhere || (!draft.trim() && images.length === 0))}
+                    onClick={() => (busy ? abort.current?.abort() : send())}
+                    className={cx(
+                      'flex size-8 items-center justify-center rounded-[var(--radius-control)] text-white transition-colors disabled:pointer-events-none disabled:opacity-40',
+                      busy ? 'bg-danger hover:bg-danger/85' : 'bg-accent hover:bg-accent-hover'
+                    )}
                   >
-                    <Icon name="chevron" className="size-4 -rotate-90" />
+                    <Icon name={busy ? 'square' : 'chevron'} className={cx('size-4', !busy && '-rotate-90')} />
                   </button>
                 </span>
               </div>
@@ -1241,7 +1257,7 @@ type Slice = { label: string; tokens: number; className: string }
 
 const estimate = (text: string) => Math.ceil(text.length / 4)
 
-function UsagePill({ usage, slices }: { usage: { input: number; output: number }; slices: Slice[] }) {
+function UsagePill({ usage, slices }: { usage: ChatUsage; slices: Slice[] }) {
   const { settings, t } = useStore()
   const [open, setOpen] = useState(false)
 
@@ -1249,20 +1265,36 @@ function UsagePill({ usage, slices }: { usage: { input: number; output: number }
   const used = Math.min(limit, slices.reduce((sum, slice) => sum + slice.tokens, 0))
   const share = Math.round((used / limit) * 100)
 
+  // Two different numbers live here. The ring is the context: what the next call
+  // will carry. The spend is what the calls already made actually cost, which is
+  // larger the moment a turn runs twice, because each one resends the context.
+  const spent = usage.input + usage.output
   const rows: Slice[] = [
     ...slices.filter((slice) => slice.tokens > 0),
     { label: t('build.free'), tokens: limit - used, className: 'bg-raised' },
+  ]
+
+  const spendRows = [
+    { label: t('build.spentIn'), value: usage.input },
+    { label: t('build.spentOut'), value: usage.output },
+    { label: t('build.spentTotal'), value: spent },
+    { label: t('build.spentCalls'), value: usage.calls },
+    { label: t('build.spentLast'), value: usage.lastInput },
   ]
 
   return (
     <div className="relative">
       <button
         type="button"
-        title={`${t('build.context')} ${share}%`}
+        title={
+          spent > 0
+            ? `${t('build.context')} ${share}% · ${t('build.spentTotal')} ${spent.toLocaleString()}`
+            : `${t('build.context')} ${share}%`
+        }
         onClick={() => setOpen(!open)}
         className="flex items-center rounded-[var(--radius-control)] px-1.5 py-1 transition-colors hover:bg-raised"
       >
-        <Ring value={used} total={limit} label={compact(used)} />
+        <Ring value={used} total={limit} label={spent > 0 ? compact(spent) : ''} />
       </button>
 
       <Popover open={open} onClose={() => setOpen(false)} align="right">
@@ -1300,12 +1332,21 @@ function UsagePill({ usage, slices }: { usage: { input: number; output: number }
             ))}
           </ul>
 
-          <p className="flex justify-between gap-6 border-t border-line pt-2 text-xs">
-            <span className="text-dim">{t('build.spent')}</span>
-            <span className="font-mono text-faint">
-              {compact(usage.input)} · {compact(usage.output)}
-            </span>
-          </p>
+          <p className="pt-0.5 text-[11px] leading-snug text-faint">{t('build.contextNote')}</p>
+
+          {spent > 0 ? (
+            <div className="space-y-1 border-t border-line pt-2">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-faint">
+                {t('build.spent')}
+              </p>
+              {spendRows.map((row) => (
+                <p key={row.label} className="flex justify-between gap-6 text-xs">
+                  <span className="text-dim">{row.label}</span>
+                  <span className="font-mono text-faint">{row.value.toLocaleString()}</span>
+                </p>
+              ))}
+            </div>
+          ) : null}
 
           {share >= 70 ? (
             <p className="text-xs text-warn">

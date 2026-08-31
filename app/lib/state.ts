@@ -96,6 +96,9 @@ type Store = {
   studioMcpReady: () => boolean
   setModal: (modal: Modal) => void
   openRun: (id: string | null) => void
+  aiReady: () => boolean
+  robloxReady: () => boolean
+  cloudReady: () => boolean
   blockers: () => MessageKey[]
   setView: (view: View) => void
   visitChat: (id: string) => void
@@ -150,11 +153,28 @@ function travel(
   )
 }
 
-function paintTheme(theme: 'dark' | 'light'): void {
+const prefersDark = () =>
+  typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches
+
+const resolveTheme = (theme: Settings['theme']): 'dark' | 'light' =>
+  theme === 'system' ? (prefersDark() ? 'dark' : 'light') : theme
+
+function paintTheme(theme: Settings['theme']): void {
+  const tone = resolveTheme(theme)
   const root = document.documentElement
-  root.dataset.theme = theme
-  root.style.background = theme === 'light' ? '#f6f6f8' : '#0b0b0f'
+  root.dataset.theme = tone
+  root.style.background = tone === 'light' ? '#f6f6f8' : '#0b0b0f'
+  // The boot script reads the stored choice before React exists, so it is saved
+  // as written, not as resolved: following the system means following it later too.
   localStorage.setItem('jstudio.theme', JSON.stringify(theme))
+}
+
+/** Windows reports its display language here; jStudio speaks three of them. */
+export function systemLanguage(): Language {
+  const tag = (navigator.languages?.[0] ?? navigator.language ?? 'en').toLowerCase()
+  if (tag.startsWith('pt')) return 'pt'
+  if (tag.startsWith('es')) return 'es'
+  return 'en'
 }
 
 const emptySettings = settingsSchema.parse({})
@@ -208,15 +228,29 @@ export const useStore = create<Store>((set, get) => ({
     return accounts.find((entry) => entry.id === activeAccountId)
   },
 
-  blockers: () => {
+  aiReady: () => {
     const { settings, apiKey } = get()
-    const account = get().activeAccount()
-    const provider = findProvider(settings.providerId)
-    const missing: MessageKey[] = []
+    return (!findProvider(settings.providerId).needsKey || !!apiKey) && !!settings.model
+  },
 
-    if ((provider.needsKey && !apiKey) || !settings.model) missing.push('onboard.provider')
-    if (!account) missing.push('onboard.roblox')
-    else if (!account.hasApiKey) missing.push('onboard.cloudKey')
+  robloxReady: () => !!get().activeAccount(),
+
+  cloudReady: () => !!get().activeAccount()?.hasApiKey,
+
+  /**
+   * What is still unconfigured, for the setup screen to point at. Nothing here
+   * gates the app: each half of jStudio asks only for what that half needs, so
+   * someone who came for the animations never has to hand over a model key.
+   */
+  blockers: () => {
+    const missing: MessageKey[] = []
+    const wants = get().settings.intent
+
+    if (wants.includes('build') && !get().aiReady()) missing.push('onboard.provider')
+    if (wants.includes('animations')) {
+      if (!get().robloxReady()) missing.push('onboard.roblox')
+      else if (!get().cloudReady()) missing.push('onboard.cloudKey')
+    }
 
     return missing
   },
@@ -449,11 +483,21 @@ export const useStore = create<Store>((set, get) => ({
         ),
       },
       studioMcpEnabled: true,
-      contextLimit: Math.max(stored.contextLimit, 1_000_000),
+      contextLimit: stored.contextLimit === 1_000_000 ? 500_000 : stored.contextLimit,
     }
     paintTheme(settings.theme)
 
+    // Until someone picks a language themselves, jStudio follows Windows.
+    if (!settings.languagePicked) settings.language = systemLanguage()
+
     set({ settings, apiKey: await secrets.get(`apiKey.${settings.providerId}`) })
+
+    // Following the system means noticing when the system changes its mind.
+    window
+      .matchMedia('(prefers-color-scheme: dark)')
+      .addEventListener('change', () => {
+        if (get().settings.theme === 'system') paintTheme('system')
+      })
 
     await Promise.all([
       get().refreshStatus(),
@@ -466,6 +510,19 @@ export const useStore = create<Store>((set, get) => ({
     if (!settings.model) {
       const fallback = findProvider(settings.providerId).fallbackModels[0]
       if (fallback) await get().patchSettings({ model: fallback })
+    }
+
+    // Someone who already set jStudio up before the setup screen learned to ask
+    // what they came for should never be sent back through it. What they have
+    // configured says what they use it for.
+    if (!settings.onboarded && (get().aiReady() || get().robloxReady())) {
+      await get().patchSettings({
+        onboarded: true,
+        intent: [
+          ...(get().aiReady() ? (['build'] as const) : []),
+          ...(get().robloxReady() ? (['animations'] as const) : []),
+        ],
+      })
     }
 
     await listen<BridgeStatus>('studio:status', (payload) => {

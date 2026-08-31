@@ -580,3 +580,37 @@ mod tests {
         assert_eq!(classifyError("weird"), "Unknown");
     }
 }
+
+/// Best effort check of an Open Cloud key before the person leaves the setup screen.
+///
+/// Roblox has no endpoint that reports what a key is allowed to do, so this asks
+/// for an asset that cannot exist and reads the refusal: 401 means the key itself
+/// is wrong, 403 means the key is real but carries no `asset:read`, and anything
+/// else means the key was accepted and the request only failed on the fake id.
+/// `asset:write` cannot be probed without creating an asset, so it is never
+/// claimed here. An unreachable API is reported as unknown, never as a failure.
+pub async fn probeApiKey(client: &Client, apiKey: &str) -> Value {
+    if apiKey.trim().is_empty() {
+        return json!({ "verdict": "empty" });
+    }
+
+    let response = client
+        .get("https://apis.roblox.com/assets/v1/assets/1")
+        .header("x-api-key", apiKey.trim())
+        .send()
+        .await;
+
+    let Ok(response) = response else {
+        return json!({ "verdict": "unknown" });
+    };
+
+    let verdict = match response.status().as_u16() {
+        401 => "unauthorized",
+        403 => "forbidden",
+        429 => "unknown",
+        status if status >= 500 => "unknown",
+        _ => "ok",
+    };
+
+    json!({ "verdict": verdict })
+}

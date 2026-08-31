@@ -14,6 +14,7 @@ export type AgentEvent =
   | { type: 'toolEnd'; id: string; ok: boolean }
   | { type: 'action'; action: Action }
   | { type: 'usage'; inputTokens: number; outputTokens: number }
+  | { type: 'notice'; text: string }
   | { type: 'question'; questions: { text: string; options: string[] }[] }
   | { type: 'remember'; facts: string[] }
   | { type: 'artifact'; name: string; model: string; text: string }
@@ -28,7 +29,7 @@ export type AgentRole = { name: string; model: string; instructions: string }
 
 export type ToolNote = { name: string; target: string; source: string }
 
-const basePrompt = `You are jStudio, a pair programmer wired into the Roblox Studio of the person you are talking to.
+export const basePrompt = `You are jStudio, a pair programmer wired into the Roblox Studio of the person you are talking to.
 
 You see the tree of the open place and propose real changes to it. Every proposal is reviewed by the person before it enters the game, so propose the complete change instead of describing what they should type.
 
@@ -265,6 +266,12 @@ const studioTools: ToolDef[] = [
   },
 ]
 
+/** Every tool definition travels as JSON on every call, so the meter can weigh it. */
+export const toolDefinitionSize = (tools: { name: string; description?: string; parameters?: unknown }[]) =>
+  Math.ceil(JSON.stringify(tools).length / 4)
+
+export const builtinToolsSize = () => toolDefinitionSize(studioTools)
+
 const scriptClasses = new Set(['Script', 'LocalScript', 'ModuleScript'])
 
 /**
@@ -477,6 +484,8 @@ export async function* runAgent(input: {
           yield { type: 'text', text: delta.text }
         } else if (delta.type === 'usage') {
           yield { type: 'usage', inputTokens: delta.inputTokens, outputTokens: delta.outputTokens }
+        } else if (delta.type === 'notice') {
+          yield { type: 'notice', text: delta.text }
         } else {
           const draft = drafts.get(delta.index) ?? { id: '', name: '', args: '' }
           if (delta.id) draft.id = delta.id
@@ -573,6 +582,7 @@ export async function* runAgent(input: {
     for await (const delta of streamChat(input.endpoint, conversation, [], input.signal)) {
       if (delta.type === 'reasoning') yield { type: 'reasoning', text: delta.text }
       else if (delta.type === 'text') yield { type: 'text', text: delta.text }
+      else if (delta.type === 'notice') yield { type: 'notice', text: delta.text }
       else if (delta.type === 'usage')
         yield { type: 'usage', inputTokens: delta.inputTokens, outputTokens: delta.outputTokens }
     }
