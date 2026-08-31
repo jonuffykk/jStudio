@@ -210,7 +210,7 @@ jobs:
           [ -n "${DISCORD_WEBHOOK_URL:-}" ] || { echo "No webhook configured, skipping."; exit 0; }
 
           URL="https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION"
-          SUMMARY=$(printf '%s\n' "$NOTES" | grep -v '^$' | head -10)
+          SUMMARY=$(printf '%s\n' "$NOTES" | awk 'NF { print; n++ } n >= 10 { exit }')
 
           jq -n \
             --arg content "@everyone" \

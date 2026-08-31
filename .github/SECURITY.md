@@ -8,7 +8,7 @@ Only the latest published release is supported. Please update before reporting a
 
 Do not open a public GitHub issue for security vulnerabilities. jStudio holds a Roblox session cookie, an Open Cloud API key and a model provider key in the OS keychain, runs a loopback HTTP bridge for the Studio plugin, launches MCP servers as child processes and replaces its own executable when it updates. Anything touching those paths belongs in a private report.
 
-Report it through a [GitHub Security Advisory](https://github.com/jonuffykk/jBuilder/security/advisories/new), or contact the maintainer directly through the links in the [README](../README.md).
+Report it through a [GitHub Security Advisory](https://github.com/jonuffykk/jStudio/security/advisories/new), or contact the maintainer directly through the links in the [README](../README.md).
 
 Include: affected version, reproduction steps, and impact. Expect an initial response within a few days.
 

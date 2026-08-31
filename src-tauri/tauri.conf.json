@@ -63,7 +63,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/jonuffykk/jBuilder/releases/latest/download/latest.json"
+        "https://github.com/jonuffykk/jStudio/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkzOTQ5QTA2MzVENjE4MjcKUldRbkdOWTFCcHFVa3hxTklCNTgxV3l0ZEsyK1dMQlI1bGJLVVhzQUFTYVBuTldHRjJsNm1qMWYK"
     }

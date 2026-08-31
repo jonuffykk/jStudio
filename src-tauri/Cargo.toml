@@ -4,7 +4,7 @@ version = "1.0.6"
 description = "AI pair programmer and animation pipeline for Roblox Studio"
 authors = ["jStudio contributors"]
 license = "MIT"
-repository = "https://github.com/jonuffykk/jBuilder"
+repository = "https://github.com/jonuffykk/jStudio"
 edition = "2021"
 rust-version = "1.82"
 
