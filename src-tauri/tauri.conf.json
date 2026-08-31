@@ -1,0 +1,71 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "jStudio",
+  "version": "1.0.6",
+  "identifier": "dev.jstudio.app",
+  "build": {
+    "beforeDevCommand": "npm run dev:web",
+    "devUrl": "http://localhost:3000",
+    "beforeBuildCommand": "npm run build:web",
+    "frontendDist": "../out"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "jStudio",
+        "width": 1240,
+        "height": 820,
+        "minWidth": 900,
+        "minHeight": 600,
+        "center": true,
+        "decorations": false,
+        "transparent": false,
+        "backgroundColor": "#0b0b0f",
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost https://tr.rbxcdn.com https://*.rbxcdn.com data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src ipc: http://ipc.localhost",
+      "capabilities": [
+        "default"
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis",
+      "app",
+      "dmg"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "AI pair programmer and animation pipeline for Roblox Studio",
+    "longDescription": "jStudio reads the tree of your open place in Roblox Studio, writes Luau you review before it lands, and re-uploads animation assets under your own account. It runs on your machine with your own API key.",
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": "-"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/jonuffykk/jBuilder/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkzOTQ5QTA2MzVENjE4MjcKUldRbkdOWTFCcHFVa3hxTklCNTgxV3l0ZEsyK1dMQlI1bGJLVVhzQUFTYVBuTldHRjJsNm1qMWYK"
+    }
+  }
+}

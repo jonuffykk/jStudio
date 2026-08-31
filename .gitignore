@@ -1,5 +1,9 @@
-node_modules/
-dist/
-*.exe
-release.bat
-
+node_modules
+.next
+out
+dist
+target
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store
+.env*.local
