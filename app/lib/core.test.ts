@@ -3,7 +3,7 @@ import { describe, it } from 'node:test'
 import { luauFor } from './luau.ts'
 import { action, settings, spoofOptions } from './schemas.ts'
 import { dictionaries, translate } from './i18n.ts'
-import { pickDefaultModel, usableForCode } from './providers.ts'
+import { pickDefaultModel, supportsVision, usableForCode } from './providers.ts'
 import { activeInstructions, builtinSkills, mergeSkills } from './skills.ts'
 
 describe('schemas', () => {
@@ -81,6 +81,16 @@ describe('providers', () => {
   it('filters out models that cannot write code', () => {
     assert.equal(usableForCode('whisper-large'), false)
     assert.equal(usableForCode('qwen-2.5-coder'), true)
+  })
+
+  it('knows which models refuse images', () => {
+    assert.equal(supportsVision('deepseek-reasoner'), false)
+    assert.equal(supportsVision('qwen2.5-coder-32b'), false)
+    assert.equal(supportsVision('openai/gpt-oss-120b'), false)
+    assert.equal(supportsVision('claude-opus-5'), true)
+    assert.equal(supportsVision('gpt-4o-mini'), true)
+    assert.equal(supportsVision('qwen2-vl-7b'), true)
+    assert.equal(supportsVision(''), true)
   })
 })
 

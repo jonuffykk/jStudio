@@ -1,4 +1,4 @@
-export type ProviderId = 'anthropic' | 'openai' | 'groq' | 'openrouter' | 'ollama' | 'custom'
+export type ProviderId = 'anthropic' | 'openai' | 'bai' | 'groq' | 'openrouter' | 'ollama' | 'custom'
 
 export type Provider = {
   id: ProviderId
@@ -43,6 +43,16 @@ export const providers: Provider[] = [
     hint: 'Solid all rounder. Pay per use.',
   },
   {
+    id: 'bai',
+    label: 'B.AI',
+    baseUrl: 'https://api.b.ai/v1',
+    keyUrl: 'https://b.ai/',
+    needsKey: true,
+    dialect: 'openai',
+    fallbackModels: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+    hint: 'One key for DeepSeek, GPT, Claude and Gemini. DeepSeek V4 Flash is free while the offer lasts.',
+  },
+  {
     id: 'openrouter',
     label: 'OpenRouter',
     baseUrl: 'https://openrouter.ai/api/v1',
@@ -81,6 +91,21 @@ const notForCode =
   /whisper|tts|text-to-speech|embed|moderation|guard|playai|orpheus|dall-e|stable-diffusion|rerank|sora|image|vision-only/i
 
 export const usableForCode = (model: string) => !notForCode.test(model)
+
+// Models that read images, and models that are known to refuse them. A model in
+// neither list is treated as sighted: the request is attempted and, if the
+// provider rejects the images, `streamChat` retries once without them.
+const seesImages =
+  /gpt-4o|gpt-4\.1|gpt-5|^o[34]|claude|gemini|llama-(3\.2-(11|90)b|4)|pixtral|vl\b|-vl-|vision|grok-[0-9]+(-|$)|internvl|glm-4v|minicpm-v|molmo/i
+
+const blindToImages =
+  /deepseek|reasoner|gpt-oss|kimi|qwen[0-9.]*-?(coder|max|turbo|plus)|codestral|codellama|starcoder|granite-code|nemotron|command-r|embed|whisper/i
+
+export function supportsVision(model: string): boolean {
+  if (!model) return true
+  if (seesImages.test(model)) return true
+  return !blindToImages.test(model)
+}
 
 const preference = [
   /claude-opus-5/i,

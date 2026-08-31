@@ -6,9 +6,9 @@ export const metadata: Metadata = {
   description: 'AI pair programmer and animation pipeline for Roblox Studio',
 }
 
-const firstPaint = `html{background:#0b0b0f}html[data-theme='light']{background:#f6f6f8}`
+const firstPaint = `html{background:#f6f6f8}html[data-theme='dark']{background:#0b0b0f}`
 
-const themeBoot = `(function(){var t='dark';try{var s=localStorage.getItem('jstudio.theme');var v=s?JSON.parse(s):null;if(v==='light'||v==='dark'){t=v}else if(window.matchMedia('(prefers-color-scheme: light)').matches){t='light'}}catch(e){}var r=document.documentElement;r.dataset.theme=t;r.style.background=t==='light'?'#f6f6f8':'#0b0b0f'})()`
+const themeBoot = `(function(){var t='light';try{var s=localStorage.getItem('jstudio.theme');var v=s?JSON.parse(s):null;if(v==='light'||v==='dark'){t=v}else if(window.matchMedia('(prefers-color-scheme: dark)').matches){t='dark'}}catch(e){}var r=document.documentElement;r.dataset.theme=t;r.style.background=t==='light'?'#f6f6f8':'#0b0b0f'})()`
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

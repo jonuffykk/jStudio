@@ -1,15 +1,16 @@
 'use client'
 
 import { useEffect, useState, type ReactNode } from 'react'
-import { history as historyApi, isDesktop, mcpHost, openExternal } from '@/app/lib/ipc'
+import { accounts as accountsApi, history as historyApi, isDesktop, mcpHost, openExternal, secrets } from '@/app/lib/ipc'
 import { groupModels, isFreeModel } from '@/app/lib/llm'
 import { findProvider, pickDefaultModel, providers } from '@/app/lib/providers'
 import { builtinCatalog, importCatalog } from '@/app/lib/registry'
-import { languageLabels, type Language } from '@/app/lib/i18n'
+import { languageLabels, type Language, type MessageKey } from '@/app/lib/i18n'
 import { slugify } from '@/app/lib/skills'
-import { useStore } from '@/app/lib/state'
+import { systemLanguage, useStore } from '@/app/lib/state'
 import {
   mcpServer,
+  settings as settingsSchema,
   skill as skillSchema,
   type AgentProfile,
   type CatalogEntry,
@@ -751,8 +752,13 @@ function AgentsTab() {
 }
 
 function UsageTab() {
-  const { settings, t } = useStore()
+  const { settings, conversations, t } = useStore()
   const log = settings.usageLog
+
+  const byChat = conversations
+    .filter((entry) => entry.usage.input + entry.usage.output > 0)
+    .sort((left, right) => right.usage.input + right.usage.output - left.usage.input - left.usage.output)
+    .slice(0, 8)
 
   const [now] = useState(() => Date.now())
 
@@ -853,14 +859,79 @@ function UsageTab() {
           )}
         </div>
       </Section>
+
+      <Section title={t('settings.perChat')}>
+        <div className="rounded-[var(--radius-panel)] border border-line bg-bg">
+          {byChat.length === 0 ? (
+            <p className="py-6 text-center text-[13px] text-faint">{t('home.empty')}</p>
+          ) : (
+            <ul className="divide-y divide-line">
+              {byChat.map((entry) => (
+                <li key={entry.id} className="flex items-center gap-3 px-3 py-2 text-[13px]">
+                  <span className="min-w-0 flex-1 truncate">{entry.title}</span>
+                  <span className="shrink-0 font-mono text-xs text-faint">
+                    {entry.usage.input.toLocaleString()} · {entry.usage.output.toLocaleString()}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </Section>
     </div>
   )
+}
+
+type Wipe = 'chats' | 'runs' | 'usage' | 'settings' | 'all'
+
+const wipeLabels: Record<Wipe, MessageKey> = {
+  chats: 'settings.clearChats',
+  runs: 'settings.clearRuns',
+  usage: 'settings.clearUsage',
+  settings: 'settings.resetSettings',
+  all: 'settings.clearAll',
+}
+
+/**
+ * Each of these throws something away for good, so they are spelled out one by
+ * one rather than hidden behind a single button that means more than it says.
+ */
+async function wipe(target: Wipe): Promise<void> {
+  const store = useStore.getState()
+  const everything = target === 'all'
+
+  if (everything || target === 'chats') {
+    for (const conversation of store.conversations) await store.deleteConversation(conversation.id)
+  }
+  if (everything || target === 'runs') {
+    await historyApi.clear()
+    await store.refreshRuns()
+  }
+  if (everything) {
+    await store.patchSettings({ memory: { ...useStore.getState().settings.memory, items: [] } })
+  }
+  if (everything || target === 'usage') {
+    await store.patchSettings({ usageLog: [], usagePulse: [] })
+  }
+  if (everything) {
+    for (const account of store.accounts) await accountsApi.remove(account.id)
+    await store.refreshAccounts()
+  }
+  if (everything || target === 'settings') {
+    // The key lives in the system vault, not in the settings file, so it is
+    // cleared by hand; the language and the theme go back to what Windows says.
+    for (const provider of providers) await secrets.set(`apiKey.${provider.id}`, '')
+
+    const fresh = settingsSchema.parse({})
+    await store.patchSettings({ ...fresh, language: systemLanguage(), onboarded: false, intent: [] })
+    useStore.setState({ apiKey: '' })
+  }
 }
 
 function AppTab() {
   const store = useStore()
   const { settings, t } = store
-  const [confirm, setConfirm] = useState<'chats' | 'runs' | null>(null)
+  const [confirm, setConfirm] = useState<Wipe | null>(null)
 
   return (
     <div className="space-y-5">
@@ -871,8 +942,9 @@ function AppTab() {
               value={settings.theme}
               onChange={(theme) => void store.patchSettings({ theme })}
               options={[
-                { value: 'dark', label: t('common.dark') },
                 { value: 'light', label: t('common.light') },
+                { value: 'dark', label: t('common.dark') },
+                { value: 'system', label: t('common.system') },
               ]}
             />
           </Line>
@@ -881,13 +953,57 @@ function AppTab() {
             <div className="w-40">
               <Select
                 value={settings.language}
-                onChange={(value) => void store.patchSettings({ language: value as Language })}
+                onChange={(value) =>
+                  void store.patchSettings({ language: value as Language, languagePicked: true })
+                }
                 options={(Object.keys(languageLabels) as Language[]).map((code) => ({
                   value: code,
                   label: languageLabels[code],
                 }))}
               />
             </div>
+          </Line>
+        </Card>
+      </Section>
+
+      <Section title={t('settings.setup')}>
+        <Card>
+          <Line label={t('onboard.intentBuild')}>
+            <Toggle
+              checked={settings.intent.includes('build')}
+              onChange={(on) =>
+                void store.patchSettings({
+                  intent: on
+                    ? [...settings.intent, 'build' as const]
+                    : settings.intent.filter((entry) => entry !== 'build'),
+                })
+              }
+              label=""
+            />
+          </Line>
+          <Line label={t('onboard.intentAnimations')}>
+            <Toggle
+              checked={settings.intent.includes('animations')}
+              onChange={(on) =>
+                void store.patchSettings({
+                  intent: on
+                    ? [...settings.intent, 'animations' as const]
+                    : settings.intent.filter((entry) => entry !== 'animations'),
+                })
+              }
+              label=""
+            />
+          </Line>
+          <Line label={t('settings.rerunSetup')}>
+            <Button
+              size="sm"
+              onClick={() => {
+                store.setModal('none')
+                void store.patchSettings({ onboarded: false })
+              }}
+            >
+              {t('settings.rerunSetupAction')}
+            </Button>
           </Line>
         </Card>
       </Section>
@@ -930,26 +1046,39 @@ function AppTab() {
               {t('common.delete')}
             </Button>
           </Line>
+          <Line label={t('settings.clearUsage')}>
+            <Button size="sm" tone="danger" onClick={() => setConfirm('usage')}>
+              {t('common.delete')}
+            </Button>
+          </Line>
+          <Line label={t('settings.resetSettings')}>
+            <Button size="sm" tone="danger" onClick={() => setConfirm('settings')}>
+              {t('settings.reset')}
+            </Button>
+          </Line>
+          <Line label={t('settings.clearAll')}>
+            <Button size="sm" tone="danger" onClick={() => setConfirm('all')}>
+              {t('settings.wipe')}
+            </Button>
+          </Line>
         </Card>
       </Section>
 
       <Confirm
         open={confirm !== null}
-        title={confirm === 'chats' ? t('settings.clearChats') : t('settings.clearRuns')}
-        body={t('common.confirmDelete')}
+        title={confirm ? t(wipeLabels[confirm]) : ''}
+        body={confirm === 'all' ? t('settings.clearAllBody') : t('common.confirmDelete')}
         confirmLabel={t('common.confirm')}
         cancelLabel={t('common.cancel')}
         onCancel={() => setConfirm(null)}
         onConfirm={async () => {
           const target = confirm
           setConfirm(null)
-          if (target === 'chats') {
-            for (const conversation of store.conversations) await store.deleteConversation(conversation.id)
-          } else {
-            await historyApi.clear()
-            await store.refreshRuns()
-          }
+          if (!target) return
+
+          await wipe(target)
           store.toast(t('settings.cleared'), 'ok')
+          if (target === 'all' || target === 'settings') store.setModal('none')
         }}
       />
     </div>

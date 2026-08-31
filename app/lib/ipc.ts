@@ -92,6 +92,10 @@ export const accounts = {
   setActive: async (id: string) => parseAccounts(await call('accountSetActive', { id })),
   remove: async (id: string) => parseAccounts(await call('accountRemove', { id })),
   groups: () => call<{ id: string; name: string }[]>('accountGroups'),
+  probeApiKey: (apiKey: string) =>
+    call<{ verdict: 'ok' | 'empty' | 'unauthorized' | 'forbidden' | 'unknown' }>('accountProbeApiKey', {
+      apiKey,
+    }),
 }
 
 export type SpoofResult = { ok: boolean; stopped: boolean; done: number; failed: number; run: RunRecord }

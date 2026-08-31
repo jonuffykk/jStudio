@@ -1,5 +1,5 @@
 import { net } from '@/app/lib/ipc'
-import { findProvider, usableForCode, type Provider, type ProviderId } from '@/app/lib/providers'
+import { findProvider, supportsVision, usableForCode, type Provider, type ProviderId } from '@/app/lib/providers'
 
 export type ToolDef = { name: string; description: string; parameters: Record<string, unknown> }
 export type ToolCall = { id: string; name: string; args: string }
@@ -15,6 +15,7 @@ export type Message =
 export type Delta =
   | { type: 'text'; text: string }
   | { type: 'reasoning'; text: string }
+  | { type: 'notice'; text: string }
   | { type: 'tool'; index: number; id?: string; name?: string; args?: string }
   | { type: 'usage'; inputTokens: number; outputTokens: number }
 
@@ -179,17 +180,62 @@ async function ensureOk(response: Response, provider: Provider): Promise<void> {
   throw new Error(describeError(new Error(`${response.status} ${message}`), provider))
 }
 
+const IMAGE_DROPPED = '[image removed: this model does not read images]'
+
+const rejectsImages = /image|vision|multi.?modal|content.*type|invalid.*content/i
+
+const carriesImages = (messages: Message[]): boolean =>
+  messages.some((message) => message.role === 'user' && !!message.images?.length)
+
+// An image left in the transcript is re-sent on every later turn, so one picture
+// sent to a text-only model breaks every message that follows it. Drop the
+// images and leave a note in their place, so the model knows something was there.
+function withoutImages(messages: Message[]): Message[] {
+  return messages.map((message) => {
+    if (message.role !== 'user' || !message.images?.length) return message
+    const note = `${IMAGE_DROPPED.slice(0, -1)}, ${message.images.length} attached]`
+    return { role: 'user', content: message.content ? `${message.content}\n\n${note}` : note }
+  })
+}
+
+function dialectStream(
+  endpoint: Endpoint,
+  messages: Message[],
+  tools: ToolDef[],
+  signal: AbortSignal
+): AsyncGenerator<Delta> {
+  return endpoint.provider.dialect === 'anthropic'
+    ? streamAnthropic(endpoint, messages, tools, signal)
+    : streamOpenAi(endpoint, messages, tools, signal)
+}
+
 export async function* streamChat(
   endpoint: Endpoint,
   messages: Message[],
   tools: ToolDef[],
   signal: AbortSignal
 ): AsyncGenerator<Delta> {
-  if (endpoint.provider.dialect === 'anthropic') {
-    yield* streamAnthropic(endpoint, messages, tools, signal)
+  const attached = carriesImages(messages)
+  const blind = attached && !supportsVision(endpoint.model)
+  let started = false
+
+  if (blind) yield { type: 'notice', text: `${endpoint.model} does not read images. Sending the text alone.` }
+
+  try {
+    for await (const delta of dialectStream(endpoint, blind ? withoutImages(messages) : messages, tools, signal)) {
+      started = true
+      yield delta
+    }
     return
+  } catch (error) {
+    // The heuristic missed: this model does take text only. Nothing has been
+    // streamed yet, so the turn can be run again without the images.
+    const raw = error instanceof Error ? error.message : String(error)
+    if (started || blind || !attached || !rejectsImages.test(raw)) throw error
   }
-  yield* streamOpenAi(endpoint, messages, tools, signal)
+
+  yield { type: 'notice', text: `${endpoint.model} does not read images. Sent the text alone.` }
+  yield* dialectStream(endpoint, withoutImages(messages), tools, signal)
 }
 
 async function* streamOpenAi(
@@ -249,8 +295,13 @@ async function* streamOpenAi(
   })
   await ensureOk(response, endpoint.provider)
 
+  // Providers disagree on where the usage lands: some send it once in a final
+  // frame, others repeat a running total in every frame. Keeping the last one
+  // and reporting it when the stream ends counts the call once either way.
+  let counted: { inputTokens: number; outputTokens: number } | null = null
+
   for await (const data of frames(response)) {
-    if (data === '[DONE]') return
+    if (data === '[DONE]') break
 
     let chunk: {
       usage?: { prompt_tokens?: number; completion_tokens?: number }
@@ -270,8 +321,7 @@ async function* streamOpenAi(
     }
 
     if (chunk.usage) {
-      yield {
-        type: 'usage',
+      counted = {
         inputTokens: chunk.usage.prompt_tokens ?? 0,
         outputTokens: chunk.usage.completion_tokens ?? 0,
       }
@@ -294,6 +344,8 @@ async function* streamOpenAi(
       }
     }
   }
+
+  if (counted) yield { type: 'usage', ...counted }
 }
 
 async function* streamAnthropic(
@@ -383,6 +435,9 @@ async function* streamAnthropic(
   })
   await ensureOk(response, endpoint.provider)
 
+  let inputTokens = 0
+  let outputTokens = 0
+
   for await (const data of frames(response)) {
     let event: {
       type?: string
@@ -403,11 +458,12 @@ async function* streamAnthropic(
       throw new Error(event.error?.message ?? 'Anthropic cut the stream short.')
     }
     if (event.type === 'message_start' && event.message?.usage) {
-      yield {
-        type: 'usage',
-        inputTokens: event.message.usage.input_tokens ?? 0,
-        outputTokens: event.message.usage.output_tokens ?? 0,
-      }
+      inputTokens = event.message.usage.input_tokens ?? 0
+      outputTokens = event.message.usage.output_tokens ?? 0
+    }
+    if (event.type === 'message_delta' && event.usage?.output_tokens !== undefined) {
+      // Anthropic reports the running total here, so the last one is the answer.
+      outputTokens = event.usage.output_tokens
     }
     if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
       yield {
@@ -427,4 +483,6 @@ async function* streamAnthropic(
         yield { type: 'tool', index: event.index ?? 0, args: delta.partial_json }
     }
   }
+
+  if (inputTokens > 0 || outputTokens > 0) yield { type: 'usage', inputTokens, outputTokens }
 }

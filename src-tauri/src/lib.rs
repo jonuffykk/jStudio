@@ -216,6 +216,11 @@ fn accountRemove(app: AppHandle, id: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
+async fn accountProbeApiKey(state: tauri::State<'_, AppState>, apiKey: String) -> Result<Value, String> {
+    Ok(roblox::probeApiKey(&state.http, &apiKey).await)
+}
+
+#[tauri::command]
 async fn accountGroups(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<Value, String> {
     let credentials = vault::activeCredentials(&app)?;
     roblox::getGroups(&state.http, &credentials.cookie, &credentials.id).await
@@ -428,6 +433,7 @@ pub fn run() {
             accountSetActive,
             accountRemove,
             accountGroups,
+            accountProbeApiKey,
             spoofStart,
             spoofPause,
             spoofResume,
@@ -448,10 +454,18 @@ pub fn run() {
         ])
         .setup(move |app| {
             if let Some(window) = app.get_webview_window("main") {
-                let light = store::loadSettings(app.handle())
+                // The window is painted before the page loads, so the stored choice is
+                // read here. "system", or nothing stored yet, follows Windows.
+                let stored = store::loadSettings(app.handle())
                     .get("theme")
                     .and_then(Value::as_str)
-                    == Some("light");
+                    .map(str::to_owned);
+
+                let light = match stored.as_deref() {
+                    Some("light") => true,
+                    Some("dark") => false,
+                    _ => window.theme().map(|theme| theme == tauri::Theme::Light).unwrap_or(true),
+                };
 
                 let tone = if light {
                     tauri::window::Color(246, 246, 248, 255)
