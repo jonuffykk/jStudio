@@ -216,7 +216,10 @@ fn accountRemove(app: AppHandle, id: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
-async fn accountProbeApiKey(state: tauri::State<'_, AppState>, apiKey: String) -> Result<Value, String> {
+async fn accountProbeApiKey(
+    state: tauri::State<'_, AppState>,
+    apiKey: String,
+) -> Result<Value, String> {
     Ok(roblox::probeApiKey(&state.http, &apiKey).await)
 }
 
@@ -464,7 +467,10 @@ pub fn run() {
                 let light = match stored.as_deref() {
                     Some("light") => true,
                     Some("dark") => false,
-                    _ => window.theme().map(|theme| theme == tauri::Theme::Light).unwrap_or(true),
+                    _ => window
+                        .theme()
+                        .map(|theme| theme == tauri::Theme::Light)
+                        .unwrap_or(true),
                 };
 
                 let tone = if light {
