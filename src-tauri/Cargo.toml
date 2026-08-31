@@ -1,6 +1,6 @@
 [package]
 name = "jstudio"
-version = "1.0.6"
+version = "1.1.0"
 description = "AI pair programmer and animation pipeline for Roblox Studio"
 authors = ["jStudio contributors"]
 license = "MIT"

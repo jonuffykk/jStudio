@@ -4,7 +4,7 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local Selection = game:GetService("Selection")
 local RunService = game:GetService("RunService")
 
-local PLUGIN_VERSION = "1.0.6"
+local PLUGIN_VERSION = "1.1.0"
 local FIRST_PORT = 8712
 local LAST_PORT = 8719
 local MAX_NODES = 4000

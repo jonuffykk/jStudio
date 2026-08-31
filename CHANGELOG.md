@@ -1,5 +1,55 @@
 # Changelog
 
+## [1.1.0]
+
+### Setup asks what you came for
+
+- First launch opens with one question: build with AI, re-upload animations, or both. Only what you pick is set up, so someone who came for the animations is never asked for a model key.
+- The steps open one at a time, on whichever is unfinished, and fold once they are done.
+- Nothing is gated any more. You can enter with a step still open and finish it later; each half of the app asks for what it needs at the moment you open it, with a button that goes straight to the panel that fixes it.
+- Settings carries the same two switches, so the other half can be turned on whenever, along with a button to run the setup again.
+- An installation that was already configured is never sent back through the setup.
+
+### The Open Cloud key
+
+- The step is a walkthrough now: a button that opens the right Roblox page, the six things to do in order, and the values to type sitting next to the line that needs them, each with a copy button. Roblox has no API that mints a key, so this is as far as automation goes.
+- The key is checked before you walk away from it. A key Roblox does not recognise, and a key with no Assets permission, are told apart and say which step to go back to. A check Roblox does not answer saves the key anyway and says it will be proven on the first upload.
+- Accounts uses the same walkthrough, so the key is asked for the same way everywhere.
+
+### Images
+
+- An image sent to a model that cannot read one used to break every later message in that chat, because it stayed in the transcript and was resent every turn. Images are now dropped before the request when the model is text-only, and the turn is retried without them when a provider refuses one unexpectedly.
+- The attach button is disabled, with the reason, on a model that does not read images, and the tray empties when you switch to one.
+
+### The meter reads properly
+
+- Usage was being counted once per stream frame. Providers that repeat a running total in every frame, rather than sending it once at the end, were multiplying the bill by the number of frames. Each call is now counted once, however the provider reports it.
+- Anthropic output was counted from the opening frame, where it is still one or two tokens. It comes from the running total now.
+- Specialists and chat naming are real calls and are counted like real calls.
+- Spend belongs to the chat that caused it and survives a restart. Compressing frees the context; it no longer pretends the money came back.
+- The ring shows nothing until something has been spent. Opening it splits the context, now including the instructions and the full tool schemas that every call carries, and reports input, output, total, calls and the last prompt, which is the measured number to compare the estimate against.
+- Usage in Settings adds the spend per chat under the daily chart. The context window defaults to 500k.
+
+### Composer
+
+- The message queue is gone. Send and stop are one button in one place: an arrow while you write, a red square while it answers.
+- A chat that is not the one running says so instead of offering a send that does nothing.
+
+### Providers, theme and language
+
+- B.AI, one key for DeepSeek, GPT, Claude and Gemini.
+- Light is the default theme, and System is a third option that is honoured from the first painted frame, through the window itself, and again when Windows changes its mind mid session.
+- The language follows Windows until you pick one yourself, and then it is yours.
+
+### Data
+
+- Clearing the usage history, resetting every setting, and deleting everything, each saying what it takes. Resetting also clears the API keys from the system vault, which do not live in the settings file.
+
+### Project
+
+- The release announcement no longer dies on a broken pipe when the changelog is long.
+- The repository moved from jBuilder to jStudio; the updater was still asking the old one for `latest.json`.
+
 ## [1.0.6]
 
 ### The agent talks less and works more
