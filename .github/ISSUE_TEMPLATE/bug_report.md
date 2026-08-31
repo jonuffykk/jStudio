@@ -6,7 +6,14 @@ labels: bug
 assignees: ''
 ---
 
-**App version** (Settings → About, or window title):
+**App version** (Settings → App → About):
+
+**Where it happens**
+
+- [ ] Build (the chat)
+- [ ] Animations (the re-upload run)
+- [ ] Studio connection / the plugin
+- [ ] Settings, updates or install
 
 **Describe the bug**
 
@@ -18,7 +25,7 @@ assignees: ''
 
 **Expected behavior**
 
-**Log output** (from the Live Log panel, redact your cookie/API key)
+**What was on screen** (paste the error, or the failed step from the run history — redact your cookie and API keys)
 
 ```
 paste here
@@ -27,4 +34,6 @@ paste here
 **Environment**
 
 - OS:
-- Roblox Studio plugin installed/updated: yes/no
+- Model provider and model:
+- Studio plugin version (Settings → Extensions):
+- Roblox Studio MCP server connected: yes/no

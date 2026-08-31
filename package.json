@@ -1,58 +1,53 @@
 {
-  "name": "jspoofer",
-  "version": "2.1.0",
-  "description": "Animation spoofing utility for Roblox Studio",
-  "author": "Jonuffy",
-  "license": "GPL-3.0-or-later",
-  "main": "main.js",
+  "name": "jstudio",
+  "version": "1.0.6",
+  "private": true,
+  "type": "module",
+  "description": "AI pair programmer and animation pipeline for Roblox Studio",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jonuffykk/jBuilder.git"
+  },
   "scripts": {
-    "start": "electron .",
-    "plugin": "node scripts/build-plugin.js",
-    "test": "node --test \"test/**/*.test.js\"",
-    "format": "prettier --write .",
-    "prebuild": "npm run plugin",
-    "build": "electron-builder"
+    "dev": "tauri dev",
+    "dev:web": "next dev",
+    "build": "tauri build",
+    "build:web": "next build",
+    "icons": "tauri icon public/logo.png",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test app/lib/core.test.ts",
+    "check": "npm run typecheck && npm run lint && npm run test",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.9.0",
+    "@tauri-apps/plugin-dialog": "^2.4.0",
+    "@tauri-apps/plugin-http": "^2.5.2",
+    "@tauri-apps/plugin-notification": "^2.3.1",
+    "@tauri-apps/plugin-opener": "^2.5.0",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.9.0",
+    "lucide-react": "^1.37.0",
+    "next": "^16.0.10",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "zod": "^4.4.3",
+    "zustand": "^5.0.9"
   },
   "devDependencies": {
-    "@electron/rebuild": "^4.0.3",
-    "electron": "^42.1.0",
-    "electron-builder": "^26.8.1",
-    "png-to-ico": "^3.0.2",
-    "pngjs": "^7.0.0",
-    "prettier": "^3.9.6"
-  },
-  "build": {
-    "appId": "com.github.jonuffykk.jSpoofer",
-    "productName": "jSpoofer",
-    "artifactName": "jSpoofer-${version}.${ext}",
-    "forceCodeSigning": false,
-    "files": [
-      "main.js",
-      "preload.js",
-      "src/main/**/*",
-      "src/renderer/**/*",
-      "assets/**/*",
-      "package.json",
-      "!**/.git/**/*",
-      "!dist/**/*"
-    ],
-    "directories": {
-      "output": "dist"
-    },
-    "extraResources": [
-      {
-        "from": "dist/jSpoofer-v${version}.rbxmx",
-        "to": "jSpoofer-v${version}.rbxmx"
-      }
-    ],
-    "win": {
-      "target": "portable",
-      "icon": "assets/logo.ico"
-    },
-    "publish": {
-      "provider": "github",
-      "owner": "jonuffykk",
-      "repo": "jSpoofer"
-    }
+    "@eslint/eslintrc": "^3.3.1",
+    "@tailwindcss/postcss": "^4.1.18",
+    "@tauri-apps/cli": "^2.9.0",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "eslint": "^9.39.2",
+    "eslint-config-next": "^16.0.10",
+    "tailwindcss": "^4.1.18",
+    "typescript": "^5.9.3"
   }
 }

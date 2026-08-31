@@ -1,0 +1,223 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NPM_FLAGS: --prefer-offline --no-audit --fund=false
+
+jobs:
+  web:
+    name: TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci $NPM_FLAGS
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test
+
+  native:
+    name: Rust
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-all-crates: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Stub the frontend
+        shell: bash
+        run: mkdir -p out && echo '<!doctype html>' > out/index.html
+      - run: cargo fmt --all --check
+        working-directory: src-tauri
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: src-tauri
+      - run: cargo test
+        working-directory: src-tauri
+
+  guard:
+    name: Release check
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      body: ${{ steps.check.outputs.body }}
+      publish: ${{ steps.check.outputs.publish }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          VERSION=$(node -p "require('./package.json').version")
+          CONF=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          CARGO=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          PLUGIN=$(sed -n 's/^local PLUGIN_VERSION = "\(.*\)"/\1/p' plugin/jStudio.server.lua | head -1)
+
+          if [ "$VERSION" != "$CONF" ] || [ "$VERSION" != "$CARGO" ] || [ "$VERSION" != "$PLUGIN" ]; then
+            echo "::error::Version mismatch. package.json=$VERSION tauri.conf.json=$CONF Cargo.toml=$CARGO plugin=$PLUGIN"
+            exit 1
+          fi
+
+          if [ -z "${SIGNING_KEY:-}" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is missing. createUpdaterArtifacts is on, so every build job would fail signing. Add the secret and push again."
+            exit 1
+          fi
+
+          TAG="v$VERSION"
+          STATE=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null || echo "absent")
+
+          if [ "$STATE" = "false" ]; then
+            echo "$TAG is already published, nothing to build."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$STATE" = "true" ]; then
+            gh release delete "$TAG" --yes --repo "$GITHUB_REPOSITORY"
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" >/dev/null 2>&1 || true
+          fi
+
+          NOTES=$(awk -v v="$VERSION" '
+            index($0, "## [" v "]") == 1 { found = 1; next }
+            found && index($0, "## [") == 1 { exit }
+            found { print }
+          ' CHANGELOG.md)
+
+          if [ -z "$(echo "$NOTES" | tr -d '[:space:]')" ]; then
+            echo "::error::CHANGELOG.md has no '## [$VERSION]' section. Add one before releasing."
+            exit 1
+          fi
+
+          case "$VERSION" in
+            *-alpha*|*-beta*|*-rc*) PRE=true ;;
+            *) PRE=false ;;
+          esac
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRE" >> "$GITHUB_OUTPUT"
+          {
+            echo "body<<RELEASE_NOTES"
+            echo "$NOTES"
+            echo ""
+            echo "The macOS build is signed ad hoc rather than notarised, so the first launch needs right click, Open, then Open again."
+            echo "RELEASE_NOTES"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.label }}
+    needs: [web, native, guard]
+    if: needs.guard.outputs.publish == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            rust: x86_64-pc-windows-msvc
+          - label: macOS
+            os: macos-latest
+            target: universal-apple-darwin
+            rust: aarch64-apple-darwin,x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-all-crates: true
+          key: ${{ matrix.target }}
+      - run: npm ci $NPM_FLAGS
+        shell: bash
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          args: --target ${{ matrix.target }}
+          tagName: v${{ needs.guard.outputs.version }}
+          releaseName: jStudio v${{ needs.guard.outputs.version }}
+          releaseBody: ${{ needs.guard.outputs.body }}
+          releaseDraft: true
+          prerelease: ${{ needs.guard.outputs.prerelease }}
+          includeUpdaterJson: true
+
+  publish:
+    name: Publish
+    needs: [guard, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Attach the plugin and publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ needs.guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" plugin/jStudio.server.lua --clobber --repo "$GITHUB_REPOSITORY"
+          gh release edit "$TAG" --draft=false --latest --repo "$GITHUB_REPOSITORY"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'
+
+  announce:
+    name: Announce
+    needs: [guard, publish]
+    if: success() && needs.guard.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Post the release to Discord
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
+          NOTES: ${{ needs.guard.outputs.body }}
+          LOGO: https://i.ibb.co/dwFJLW1Q/logo.png
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
+        run: |
+          set -euo pipefail
+          [ -n "${DISCORD_WEBHOOK_URL:-}" ] || { echo "No webhook configured, skipping."; exit 0; }
+
+          URL="https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION"
+          SUMMARY=$(printf '%s\n' "$NOTES" | grep -v '^$' | head -10)
+
+          jq -n \
+            --arg content "@everyone" \
+            --arg author "jStudio v$VERSION" \
+            --arg icon "$LOGO" \
+            --arg url "$URL" \
+            --arg description "$SUMMARY"$'\n\n'"[Full changelog]($URL)" \
+            --argjson color 7161576 \
+            '{content: $content, embeds: [{author: {name: $author, icon_url: $icon}, description: $description, color: $color, url: $url, thumbnail: {url: $icon}}]}' \
+          | curl -fsSL -X POST "$DISCORD_WEBHOOK_URL" -H "Content-Type: application/json" -d @-

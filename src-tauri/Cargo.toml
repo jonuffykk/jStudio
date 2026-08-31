@@ -1,0 +1,42 @@
+[package]
+name = "jstudio"
+version = "1.0.6"
+description = "AI pair programmer and animation pipeline for Roblox Studio"
+authors = ["jStudio contributors"]
+license = "MIT"
+repository = "https://github.com/jonuffykk/jBuilder"
+edition = "2021"
+rust-version = "1.82"
+
+[lib]
+name = "jstudio_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["unstable"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-http = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-process = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "process", "io-util", "sync", "time", "fs"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["limit"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart"] }
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
+
+[target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

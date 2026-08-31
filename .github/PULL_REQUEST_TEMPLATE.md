@@ -8,10 +8,11 @@ Closes #
 
 ## Checklist
 
-- [ ] `npm test` passes
-- [ ] `npm run plugin` rebuilt successfully (if `scripts/plugin.lua` changed)
-- [ ] Tested manually in the app (describe below)
-- [ ] No unrelated changes included
+- [ ] `npm run check` passes
+- [ ] `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` pass in `src-tauri` (if Rust changed)
+- [ ] Loaded in Studio and confirmed connect, sync and scan (if `plugin/jStudio.server.lua` changed)
+- [ ] Every new string added to all three dictionaries in `app/lib/i18n.ts`
+- [ ] No version bump, and no unrelated changes included
 
 ## Manual test notes
 
