@@ -1,4 +1,4 @@
-import type { Action, RunRecord, SpoofOptions } from '@/app/lib/schemas'
+import type { Action, AssetKind, RunRecord, SpoofOptions } from '@/app/lib/schemas'
 import {
   accountList,
   bridgeStatus,
@@ -101,11 +101,16 @@ export const accounts = {
 export type SpoofResult = { ok: boolean; stopped: boolean; done: number; failed: number; run: RunRecord }
 
 export const spoof = {
-  scan: (selectedOnly: boolean) => call<{ id: string; name: string }[]>('spoofScan', { selectedOnly }),
+  scan: (selectedOnly: boolean, assetKind: AssetKind) =>
+    call<{ id: string; name: string; creatorType: string; creatorId: string }[]>('spoofScan', {
+      selectedOnly,
+      assetKind,
+    }),
   start: (options: SpoofOptions) => call<SpoofResult>('spoofStart', { options }),
-  pause: () => call<void>('spoofPause'),
-  resume: () => call<void>('spoofResume'),
+  pause: () => call<boolean>('spoofPause'),
+  resume: () => call<boolean>('spoofResume'),
   stop: () => call<void>('spoofStop'),
+  state: () => call<{ running: boolean; paused: boolean }>('spoofRunning'),
 }
 
 const parseRuns = (value: unknown): RunRecord[] => {

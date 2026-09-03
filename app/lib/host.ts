@@ -1,3 +1,5 @@
+import { isDesktop } from '@/app/lib/ipc'
+
 type Sound = 'send' | 'done' | 'error' | 'tap'
 
 const voices: Record<Sound, { notes: number[]; duration: number; gain: number }> = {
@@ -46,4 +48,25 @@ export function play(sound: Sound, enabled: boolean): void {
     oscillator.start(start)
     oscillator.stop(start + voice.duration + 0.02)
   })
+}
+
+export async function checkUpdate(): Promise<string | null> {
+  if (!isDesktop()) return null
+  try {
+    const { check } = await import('@tauri-apps/plugin-updater')
+    const found = await check()
+    return found?.version ?? null
+  } catch {
+    return null
+  }
+}
+
+export async function installUpdate(): Promise<void> {
+  const { check } = await import('@tauri-apps/plugin-updater')
+  const found = await check()
+  if (!found) return
+
+  await found.downloadAndInstall()
+  const { relaunch } = await import('@tauri-apps/plugin-process')
+  await relaunch()
 }

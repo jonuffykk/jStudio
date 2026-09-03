@@ -62,9 +62,6 @@ fn studioCommand() -> Option<(String, Vec<String>)> {
     {
         let root = std::path::PathBuf::from(std::env::var("LOCALAPPDATA").ok()?).join("Roblox");
 
-        // The launcher Roblox writes is a .bat, and running it through cmd.exe flashes a console
-        // window and reads as a script drop to behavioural antivirus. Go straight to the binary it
-        // points at, and only fall back to the script when the layout is one we do not know.
         let binary =
             newestStudioMcp(&root.join("Versions")).or_else(|| mcpBatTarget(&root.join("mcp.bat")));
 

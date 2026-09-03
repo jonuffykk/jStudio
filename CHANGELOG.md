@@ -1,6 +1,197 @@
 # Changelog
 
+## [1.2.0]
+
+### One page for every asset
+
+- Animations, audios and images were three entries in the sidebar running the same screen three times. They are now one Assets page with a switch at the top, and each kind still keeps its own run history and its own settings.
+- Meshes joined them as a fourth kind, read from MeshPart, SpecialMesh, FileMesh, CharacterMesh, WrapTarget and WrapLayer.
+- The sidebar is down to Home, Build and Assets, and Ctrl+1 to Ctrl+3 follow it.
+
+### The scan sees the whole place
+
+- One id per instance was ever read, so a Sky kept five of its six textures, a SurfaceAppearance three of its four maps and an ImageButton two of its three images. Every reference is recorded now, and every one of them is replaced.
+- The property list grew to what a place actually holds: Decal, Texture, MeshPart, SpecialMesh, CharacterMesh, ParticleEmitter, Beam, Trail, ImageLabel, ImageButton, ImageHandleAdornment, Shirt, Pants, ShirtGraphic, Sky, SurfaceAppearance, MaterialVariant, Sound, AudioPlayer, Animation and the seven Humanoid animation properties.
+- Properties are read and written as string, as number and as Content, so the values recent Studio builds hand over no longer read as empty.
+- An asset the catalog will not talk about was dropped from the scan. That is precisely what a private or moderated asset looks like, which meant the assets most worth replacing never appeared. The property an id sits on now decides its kind, and the catalog is asked only for the name, the creator, and to move an id that plainly belongs to another tab.
+
+### Downloads reach what Studio reaches
+
+- The games that actually run an asset are asked for first, through asset-to-universe. A copylocked asset is served to those places, and this is what makes someone else's asset reachable at all. The previous build never asked.
+- The delivery service is asked in the shape the client asks: the plain url, then the url carrying placeId, serverplaceid and clientInsert, then the location endpoint, then the batch call, then the asset hash across every CDN shard and the saved versions.
+- The Studio session guid is a real per-place guid held for the life of the process. The one derived from the place id was a shape Roblox refused for copylocked assets.
+- A free asset that is refused is taken first, then downloaded, instead of only being labelled free.
+- What counts as a valid payload follows the file: magic numbers for audio and pictures, and an error-page blacklist for animations and meshes, whose binary shapes keep changing.
+- The creator's games are asked for publicly first and privately only if that came back empty.
+- An asset nobody will serve stops after twenty refusals in a row instead of spending the shared rate limit on every remaining url.
+
+### The picture that arrived blank
+
+- A picture id is usually a Decal, and what Roblox hands over for one is a small model pointing at the bitmap underneath. The id inside it is read out and fetched on its own.
+- Uploading the result as a Decal handed back the id of a new wrapper, and a Texture or an Image property fed that id shows nothing. Pictures upload as Image now, so the id that goes back into the place is the bitmap itself. A type name the key refuses is retried once under the other name Roblox knows it by.
+
+### Pause and stop
+
+- Resume could be missed. The waiting task registered for the wake-up after checking the flag, so a resume landing in that gap left the run paused forever. The wait is polled now, and it costs nothing.
+- Pause and resume answer with the state of the run itself, so the button can no longer disagree with what is happening, and pausing when nothing is running does nothing at all.
+- A run that ends any way at all, including badly, releases the running flag. A failed run used to leave the app refusing the next one.
+- Opening the Assets page reconciles with the run that is actually going, so a reload no longer shows a run that finished or hides one that did not.
+- What the run is doing, which the backend has always reported, is on screen under the progress bar.
+
+### Runs are faster
+
+- The walk out from an asset's creator, a dozen paginated lookups deep, used to run once per asset and again for every asset that shared a creator. It runs once per creator now.
+- Nothing pays for that walk until it has to. The place open in Studio is asked on its own first, which is the answer for almost everything a run meets.
+- The direct urls are tried before the two resolver calls, so an asset that was always going to answer costs one request instead of three.
+- A download slot was held for the whole upload that followed it, so the two limits collapsed into whichever was smaller. The slot is handed back the moment the bytes are in hand.
+- The plugin asked Roblox about one asset id at a time while scanning, which is what made a large place take minutes. Twelve run at once now, and an answer is remembered for the session.
+
+### Fixes
+
+- A failure trail long enough to be trimmed crashed the worker: the cut landed inside the middle dot that joins its steps. It cuts on character boundaries now.
+- A scan that finds nothing goes back to the empty state instead of showing an empty picker, and Run with nothing ticked no longer starts a run that has nothing to do.
+- The list no longer yanks itself to the bottom on every event while a run is going.
+- The line naming the account an asset belongs to is gone from the rows; it repeated what the run already knows and said nothing useful.
+- The audio page reported an empty scan in the words of the animation page. Every message that names what was scanned now says the kind it was actually looking for, in all three languages.
+- The row previews are gone: neither the sound player nor the picture thumbnail was worth the network round trip it cost before a run.
+
+### The assistant
+
+- Effort is matched to the request. A greeting, a yes or no, a one line fix is answered at once; deliberation is reserved for what an answer actually turns on. Restating the request, announcing the next step and summarising a proposal already on screen are all out.
+- How long an answer took is on it: the thinking time on the reasoning block, the total on the message.
+- Every code block carries a copy button that confirms what it did.
+- The chat could only re-upload animations; sounds, pictures and meshes are all in reach of `respoofAssets` now.
+- A run the chat starts shows on the Assets page as it happens, on the right kind, instead of finishing invisibly.
+
+### Skills
+
+- Five, all for Roblox Studio, all listed by default: server-authority, mobile-ui, roblox-performance, typed-luau and animation-hygiene.
+- None of them load themselves. A skill enters the prompt when it is invoked by its slash name, and the assistant is told the others exist without being told what they say. A chat that needs none of them carries none of their words.
+
+### Elsewhere
+
+- The Assets tab wears an icon that reads as assets rather than as film.
+- The account menu sits slightly higher and further from the rail.
+- The accounts window was rebuilt on the same panels and numbered steps as the rest of the app: each account is one card carrying its state, its key and its actions.
+- A release no longer fails because the changelog was not touched; the notes fall back to the commits since the last tag. A push that does not change the version is a quiet no-op instead of an error.
+- Six small library files became four, and the source carries no comments.
+
+## [1.1.2]
+
+### The bytes arrive readable
+
+- The delivery CDN hands assets over gzipped, with the encoding signed into the URL, and the HTTP client was not asking for or undoing that. Every asset that did come down arrived compressed and was thrown away as not an asset. It is decompressed now.
+- A payload that is still compressed says so in the trail rather than reading as a refusal.
+
+### The batch endpoint is back
+
+- Downloads went through the plain request after the chain was rewritten, and the batch call that Studio itself makes was dropped along the way. It is the first thing tried again, for the open place and then for the others, with the Studio session on it.
+
+### Free assets
+
+- An asset that was refused but is free to take now says so, with a button that opens it on Roblox. jStudio does not add anything to your account for you: you take it in your own session, in one click, and the next run picks it up.
+
+### Fixes
+
+- A row kept the reason of the failure that came before it while the retry was still downloading. Each event replaces the row instead of merging into it.
+- A section refuses to scan while the Studio plugin is out of date. An old plugin ignores which kind it was asked for and answers with animations, which is why Audios and Images were listing them.
+
+### Polish
+
+- The play control appears on the row under the cursor instead of on all of them.
+- A failed row reads as one line, how it ended and after how many tries, with the whole trail on hover.
+- The empty state names the section it is in. Every one of them said animations.
+
+### Images
+
+- The pipeline runs on pictures too: decals, textures, mesh textures, particles, beams, trails and interface images, in their own section with its own history. Each row shows the thumbnail Roblox already renders.
+- The uploader reads the container off the bytes, so a png goes up as a png and a jpg as a jpg, and a picture that resolves to a decal is accepted in either form.
+
+### Preview
+
+- A sound plays in the app and a picture shows its thumbnail. An animation has no preview: rendering a rig needs an engine this window does not have, and sending you to Studio to watch it was not a preview of anything.
+- A sound whose bytes are not a container the player understands says so instead of failing silently inside the audio element.
+
+### Reaching assets that are not yours
+
+- Taking an asset you do not own is the point of the pipeline, so a run no longer stops when Studio is signed into a different account. It says so once and goes ahead.
+- Places around the creator are tried after their own: the groups they belong to, the owners of those groups, and the games all of them published. A private asset is usually used by a game its creator only collaborates on.
+- `expectedAssetType` is sent only for the kinds where Roblox uses it, matching what the reference implementation does.
+
+### Infrastructure
+
+- Rate limits are held per endpoint family. A throttled upload used to stall every download queued behind it.
+- Every lookup that is not a transfer waits on its own clock and reads the `retry-after` Roblox sends.
+
+### Removed
+
+- The Explorer section. The place tree is already what the chat reads, and a second read-only view of it earned nothing.
+- The Audios icon is the waveform rather than the speaker, which read as a volume control.
+
+### Assets come down, and the failures say why
+
+- A run that failed reported `No permission` on every row, whichever half of the pipeline actually refused. Download and upload now speak for themselves: a key that cannot write assets, a session that expired, an asset nobody will vouch for, and the exact response from Roblox on hover.
+- Roblox hands an asset over to something that looks like Studio opening a place allowed to use it. jStudio was sending one header of the three that prove it, so every asset it did not already own came back 403. The download presents a full Studio session now, place, game and session id together, under a Studio user agent.
+- When no known place vouches for an asset, Roblox is asked which universes reference it and their places are tried. That is what group assets needed.
+- After those come the asset's own hash on the CDN, where no permission applies, and then its saved versions, which often survive when the current one does not.
+- What comes back is checked for being the thing that was asked for. An error page arriving with a 200 used to be re-uploaded as a broken asset.
+- The place that vouched for one asset is tried first for the next one by the same creator.
+
+### The place you have open
+
+- Every asset was refused because the one place certain to reference it, the one open in Studio right now, was never in the list jStudio asked with. It goes first for every asset now, and a private asset of your own comes down on the first request.
+- The lookup that asked Roblox which universes use an asset answers 404 for every asset, public ones included. It is gone, and with it a round trip per asset that bought nothing.
+- A run checks the Roblox session before it starts. An expired one now says so once, instead of ten rows of Not authorized.
+- The expensive fallbacks, the CDN hash and the saved versions, are only looked up once everything cheap has failed.
+
+### An upload that plays where you put it
+
+- An asset uploaded under your account is not usable inside someone else's experience until it is granted there, which is what left a replaced animation silent. Every upload now grants Use to the universe of the open place.
+
+### Audios
+
+- The whole pipeline runs on sounds as well: scan, download, upload, replace, apply and revert. Each kind keeps its own history, and each id is confirmed with Roblox before it enters a run, so an audio never lands in an animation run.
+- A sound can be played inside jStudio before anything is replaced. It comes through the same download chain a run uses, so what you hear is what would be re-uploaded.
+- The uploader reads the container off the bytes, so an ogg goes up as an ogg and an mp3 as an mp3.
+
+### First run and the Open Cloud key
+
+- The key is saved the moment you press save. It used to be held back when the check came back unhappy, so a good key that Roblox answered a 403 for was quietly never stored.
+- The walkthrough lost the step about accepted IP addresses, which changed nothing.
+- Picking what you came for no longer jumps to the next step and takes the second pick away. Each step ends with Continue.
+
+### Audios and animations stop borrowing each other
+
+- The live rows of a run belong to the section that started it. The Audios list was showing whatever the animations run was doing.
+- Run stops being offered while a run is going. Keeping the list on screen had left it there next to the pause and stop it conflicts with.
+
+### The list holds still
+
+- Starting a run keeps the list you chose from, each row picking up its own status as it goes, instead of tearing it down and building a different one as the events arrive.
+
 ## [1.1.0]
+
+### Animations come down again
+
+- Every asset was failing on `No permission`. Roblox hands an animation over to something that looks like Studio opening a place allowed to use it, and jStudio was sending one header of the three that proves it. The download now presents a full Studio session, place, game and session id together, under a Studio user agent.
+- When no place jStudio knows about can vouch for an asset, it asks Roblox which universes actually reference it and tries their places. That is what group animations needed.
+- After those, the asset's own hash is tried on the CDN, where no permission applies at all.
+- A refusal moves to the next candidate instead of retrying the same URL, and a rate limit waits out the cooldown Roblox asks for.
+- What comes back is checked for being a model. An error page arriving with a 200 used to be uploaded as a broken asset.
+- The place that vouched for one asset is tried first for the next one by the same creator.
+
+### The Open Cloud key sticks
+
+- The key is saved the moment you press save. It used to be held back when the check came back unhappy, so a good key that Roblox answered a 403 for was quietly never stored. The check is a note beside a saved key now, never a refusal.
+- The walkthrough lost the step about accepted IP addresses. A key Roblox leaves alone is unrestricted, so the step changed nothing.
+
+### First run, in order
+
+- Picking what you came for no longer jumps to the next step, which took the second pick away before you could make it. Each step ends with Continue, and moves when you say so.
+
+### The animation list holds still
+
+- Starting a run keeps the list you just chose from, each row picking up its own status as it goes, instead of tearing the list down and building a different one as the events arrive.
 
 ### Setup asks what you came for
 

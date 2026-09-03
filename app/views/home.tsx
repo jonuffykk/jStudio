@@ -2,9 +2,8 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { plugin as pluginApi } from '@/app/lib/ipc'
-import { installUpdate } from '@/app/lib/updates'
 import { findProvider } from '@/app/lib/providers'
-import { play } from '@/app/lib/sfx'
+import { installUpdate, play } from '@/app/lib/host'
 import { useStore } from '@/app/lib/state'
 import { Button, Icon, Panel, Skeleton, Spinner, cx } from '@/app/ui/primitives'
 
@@ -101,7 +100,7 @@ export function HomeView() {
               icon="film"
               title={t('home.runAnimations')}
               body={t('home.cardAnimations')}
-              onClick={() => store.setView('spoof')}
+              onClick={() => store.setView('assets')}
             />
             <ActionCard
               icon="settings"

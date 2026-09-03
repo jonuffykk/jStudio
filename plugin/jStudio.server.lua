@@ -1,21 +1,102 @@
 local HttpService = game:GetService("HttpService")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local MarketplaceService = game:GetService("MarketplaceService")
+local StudioService = game:GetService("StudioService")
 local Selection = game:GetService("Selection")
 local RunService = game:GetService("RunService")
 
-local PLUGIN_VERSION = "1.1.0"
+local PLUGIN_VERSION = "1.2.0"
 local FIRST_PORT = 8712
 local LAST_PORT = 8719
 local MAX_NODES = 4000
 local MAX_SOURCE = 60000
 local SCAN_BATCH = 40
 local IDLE_DELAY = 1
-local ANIMATION_ASSET_TYPE = 24
+local KIND_PROPERTIES = {
+	animation = {
+		{ className = "Animation", properties = { "AnimationId" } },
+		{
+			className = "Humanoid",
+			properties = {
+				"ClimbAnimation",
+				"FallAnimation",
+				"IdleAnimation",
+				"JumpAnimation",
+				"RunAnimation",
+				"SwimAnimation",
+				"WalkAnimation",
+			},
+		},
+	},
+	audio = {
+		{ className = "Sound", properties = { "SoundId" } },
+		{ className = "AudioPlayer", properties = { "AssetId", "Asset" } },
+	},
+	image = {
+		{ className = "Decal", properties = { "Texture" } },
+		{ className = "Texture", properties = { "Texture" } },
+		{ className = "MeshPart", properties = { "TextureID" } },
+		{ className = "SpecialMesh", properties = { "TextureId" } },
+		{ className = "CharacterMesh", properties = { "BaseTextureId", "OverlayTextureId" } },
+		{ className = "ParticleEmitter", properties = { "Texture" } },
+		{ className = "Beam", properties = { "Texture" } },
+		{ className = "Trail", properties = { "Texture" } },
+		{ className = "ImageLabel", properties = { "Image" } },
+		{ className = "ImageButton", properties = { "Image", "HoverImage", "PressedImage" } },
+		{ className = "ImageHandleAdornment", properties = { "Image" } },
+		{ className = "Shirt", properties = { "ShirtTemplate" } },
+		{ className = "Pants", properties = { "PantsTemplate" } },
+		{ className = "ShirtGraphic", properties = { "Graphic" } },
+		{
+			className = "Sky",
+			properties = {
+				"SkyboxBk",
+				"SkyboxDn",
+				"SkyboxFt",
+				"SkyboxLf",
+				"SkyboxRt",
+				"SkyboxUp",
+				"SunTextureId",
+				"MoonTextureId",
+			},
+		},
+		{
+			className = "SurfaceAppearance",
+			properties = { "ColorMap", "MetalnessMap", "NormalMap", "RoughnessMap" },
+		},
+		{
+			className = "MaterialVariant",
+			properties = { "ColorMap", "MetalnessMap", "NormalMap", "RoughnessMap" },
+		},
+	},
+	mesh = {
+		{ className = "MeshPart", properties = { "MeshId", "MeshContent" } },
+		{ className = "SpecialMesh", properties = { "MeshId" } },
+		{ className = "FileMesh", properties = { "MeshId" } },
+		{ className = "CharacterMesh", properties = { "MeshId" } },
+		{ className = "WrapTarget", properties = { "ReferenceMeshId", "CageMeshId" } },
+		{ className = "WrapLayer", properties = { "ReferenceMeshId", "CageMeshId" } },
+	},
+}
+
+-- What the catalog says an id is. It outranks the property the id was read from, so
+-- a mesh sitting on a texture property is listed under meshes and never under
+-- pictures.
+local TYPE_KIND = {
+	[3] = "audio",
+	[24] = "animation",
+	[61] = "animation",
+	[1] = "image",
+	[11] = "image",
+	[12] = "image",
+	[13] = "image",
+	[4] = "mesh",
+	[10] = "mesh",
+	[40] = "mesh",
+}
+
 local SCAN_YIELD_EVERY = 150
--- Scripts often carry the animation as a bare number ("AnimationId = 1234567890"). Any digit run
--- this long that is not glued to an identifier is a candidate; MarketplaceService then confirms
--- whether it really is an animation.
+local PRODUCT_INFO_WORKERS = 12
 local MIN_BARE_ID_DIGITS = 8
 local EXPLICIT_PREFIXES = { "rbxassetid://$", "[?&]id=$", "assetid=$", "asset/%?id=$" }
 
@@ -90,10 +171,18 @@ end
 local function findPort()
 	for candidate = FIRST_PORT, LAST_PORT do
 		port = candidate
+		local studioUserId = 0
+		pcall(function()
+			studioUserId = StudioService:GetUserId()
+		end)
+
 		local reply = send("/hello", "POST", {
 			placeId = tostring(game.PlaceId),
 			placeName = game.Name,
 			pluginVersion = PLUGIN_VERSION,
+			studioUserId = tostring(studioUserId),
+			creatorId = tostring(game.CreatorId),
+			creatorType = game.CreatorType == Enum.CreatorType.Group and "group" or "user",
 		})
 		if reply and reply.ok then
 			return true
@@ -315,14 +404,70 @@ local function sourceOf(instance)
 	return ok and source or nil
 end
 
-local function animationIdOf(instance)
-	local raw = instance.AnimationId
-	return raw and string.match(raw, "%d+") or nil
+local function assetIdIn(text)
+	if type(text) ~= "string" or text == "" or text == "nil" then
+		return nil
+	end
+	if string.find(text, "16666666666666") then
+		return nil
+	end
+	local assetId = string.match(text, "%d+")
+	if not assetId or #assetId < 4 or string.match(assetId, "^(%d)%1+$") then
+		return nil
+	end
+	return assetId
 end
 
--- Walks every asset-id-looking token in a source file. Explicit references (rbxassetid://, ?id=)
--- always count; bare numbers need MIN_BARE_ID_DIGITS and must not be part of a longer identifier
--- or a decimal number.
+-- Properties come back as a plain string, a raw number or a Content value depending
+-- on the class and the Studio build, so all three shapes are read and written back.
+local function readAsset(instance, property)
+	local ok, raw = pcall(function()
+		return instance[property]
+	end)
+	if not ok or raw == nil then
+		return nil, nil
+	end
+
+	if typeof(raw) == "Content" then
+		local okUri, uri = pcall(function()
+			return raw.Uri
+		end)
+		return okUri and assetIdIn(uri) or nil, "content"
+	end
+	if type(raw) == "string" then
+		return assetIdIn(raw), "string"
+	end
+	if type(raw) == "number" and raw > 0 and raw % 1 == 0 then
+		return assetIdIn(tostring(math.floor(raw))), "number"
+	end
+	return nil, nil
+end
+
+local function writeAsset(instance, property, shape, newId)
+	local url = "rbxassetid://" .. newId
+
+	if shape == "number" then
+		return pcall(function()
+			instance[property] = tonumber(newId)
+		end)
+	end
+	if shape == "content" then
+		local ok = pcall(function()
+			instance[property] = Content.fromUri(url)
+		end)
+		if ok then
+			return true
+		end
+	end
+	return pcall(function()
+		instance[property] = url
+	end)
+end
+
+local function propertiesFor(kind)
+	return KIND_PROPERTIES[kind] or KIND_PROPERTIES.animation
+end
+
 local function eachSourceId(source, visit)
 	local cursor = 1
 	while true do
@@ -351,9 +496,6 @@ local function eachSourceId(source, visit)
 	end
 end
 
--- Names the animation after the closest assignment target to the left of the id on the same line,
--- so `Roll = 3333333333, ["Slide Left"] = 4444444444` names each id correctly instead of reusing
--- the first key on the line.
 local function variableNameFor(source, position)
 	if not position then
 		return nil
@@ -391,7 +533,6 @@ local function variableNameFor(source, position)
 	return name
 end
 
--- A scan line is `id - name - K: creatorId`, so a name may not carry either delimiter.
 local function cleanName(name)
 	name = string.gsub(name, "%s*%-%s*", " ")
 	name = string.gsub(name, ":", ";")
@@ -409,7 +550,7 @@ local function resolveName(useInstanceNames, info, instanceName, source, positio
 	if not useInstanceNames then
 		return info.Name or "Unknown"
 	end
-	if instanceName and instanceName ~= "" and instanceName ~= "Animation" then
+	if instanceName and instanceName ~= "" and instanceName ~= "Animation" and instanceName ~= "Sound" then
 		return instanceName
 	end
 	if source then
@@ -421,37 +562,108 @@ local function resolveName(useInstanceNames, info, instanceName, source, positio
 	return info.Name or "Unknown"
 end
 
-local function eachAnimationReference(objects, visit)
-	local seen = {}
+-- Every place an id is written, not only the first one per instance: a Sky holds six
+-- textures and a SurfaceAppearance four, and the old walk replaced one of them.
+local function eachAssetReference(objects, kind, visit)
+	local entries = propertiesFor(kind)
+
 	for index, instance in ipairs(objects) do
 		if index % SCAN_YIELD_EVERY == 0 then
 			task.wait()
 		end
 
-		if instance:IsA("Animation") then
-			local assetId = animationIdOf(instance)
-			if assetId and not seen[assetId] then
-				seen[assetId] = true
-				visit(assetId, instance.Name, nil, nil)
+		local matched = false
+		for _, entry in ipairs(entries) do
+			if instance:IsA(entry.className) then
+				for _, property in ipairs(entry.properties) do
+					local assetId, shape = readAsset(instance, property)
+					if assetId then
+						matched = true
+						visit({
+							assetId = assetId,
+							instance = instance,
+							property = property,
+							shape = shape,
+							instanceName = instance.Name,
+						})
+					end
+				end
 			end
-		elseif instance:IsA("LuaSourceContainer") then
+		end
+
+		if not matched and instance:IsA("LuaSourceContainer") then
 			local source = sourceOf(instance)
 			if source and source ~= "" then
 				eachSourceId(source, function(assetId, position)
-					if not seen[assetId] then
-						seen[assetId] = true
-						visit(assetId, nil, source, position)
-					end
+					visit({
+						assetId = assetId,
+						instance = instance,
+						source = source,
+						position = position,
+					})
 				end)
 			end
 		end
 	end
 end
 
+local productInfoCache = {}
+
+local function productInfo(assetId)
+	local cached = productInfoCache[assetId]
+	if cached ~= nil then
+		return cached or nil
+	end
+
+	local ok, info = pcall(function()
+		return MarketplaceService:GetProductInfo(tonumber(assetId))
+	end)
+	local resolved = (ok and info) or false
+	productInfoCache[assetId] = resolved
+	return resolved or nil
+end
+
+local function resolveAll(candidates)
+	local pending, running = 1, 0
+	local workers = math.min(PRODUCT_INFO_WORKERS, #candidates)
+
+	for _ = 1, workers do
+		running += 1
+		task.spawn(function()
+			while true do
+				local index = pending
+				pending += 1
+				local candidate = candidates[index]
+				if not candidate then
+					break
+				end
+				candidate.info = productInfo(candidate.assetId)
+			end
+			running -= 1
+		end)
+	end
+
+	while running > 0 do
+		task.wait()
+	end
+end
+
 local function runScan(request)
 	local objects = (request.selectedOnly and #Selection:Get() == 0) and {} or scanRoots(request.selectedOnly)
-	local batch = {}
+	local kind = request.assetKind or "animation"
 
+	local candidates, seen = {}, {}
+	eachAssetReference(objects, kind, function(reference)
+		if seen[reference.assetId] then
+			return
+		end
+		seen[reference.assetId] = true
+		table.insert(candidates, reference)
+	end)
+
+	resolveAll(candidates)
+
+	local batch = {}
 	local function flush(force)
 		if #batch == 0 or (not force and #batch < SCAN_BATCH) then
 			return
@@ -461,28 +673,41 @@ local function runScan(request)
 		task.wait()
 	end
 
-	eachAnimationReference(objects, function(assetId, instanceName, source, position)
-		-- An id that looks like an asset is not necessarily an animation, and treating a decal or a
-		-- sound as one is where the old scanner produced its failures.
-		local ok, info = pcall(function()
-			return MarketplaceService:GetProductInfo(tonumber(assetId))
-		end)
-		if not ok or not info or info.AssetTypeId ~= ANIMATION_ASSET_TYPE then
-			return
+	for _, candidate in ipairs(candidates) do
+		local info = candidate.info
+		local fromProperty = candidate.property ~= nil
+		local wanted
+
+		if info then
+			local told = TYPE_KIND[info.AssetTypeId]
+			-- An id the catalog places somewhere else belongs to that tab, not this one.
+			wanted = told == kind or (told == nil and fromProperty)
+		else
+			-- A private or moderated asset has no catalog entry. Dropping it here is
+			-- what left the assets most worth replacing out of every run.
+			wanted = fromProperty
 		end
 
-		local kind, creatorId = creatorOf(info)
-		local name = cleanName(resolveName(request.useInstanceNames, info, instanceName, source, position))
-		table.insert(batch, string.format("%s - %s - %s: %s", assetId, name, kind, creatorId))
-		flush(false)
-	end)
+		if wanted then
+			local creatorKind, creatorId = "U", "0"
+			if info then
+				creatorKind, creatorId = creatorOf(info)
+			end
+			local name = cleanName(
+				resolveName(request.useInstanceNames, info or {}, candidate.instanceName, candidate.source, candidate.position)
+			)
+			if name == "" or (not info and name == "Unknown") then
+				name = candidate.instanceName or ("Asset " .. candidate.assetId)
+			end
+			table.insert(batch, string.format("%s - %s - %s: %s", candidate.assetId, name, creatorKind, creatorId))
+			flush(false)
+		end
+	end
 
 	flush(true)
 	send("/scan", "POST", { status = "completed", results = {} })
 end
 
--- Rewrites every id token the scanner would have picked up, so bare numeric references are swapped
--- exactly like rbxassetid:// ones and their surrounding formatting survives.
 local function replaceInSource(source, map)
 	local pieces, cursor, changed = {}, 1, false
 	eachSourceId(source, function(assetId, position)
@@ -503,6 +728,8 @@ local function replaceInSource(source, map)
 end
 
 local function applyMappings(push)
+	local kind = push.assetKind or "animation"
+
 	if push.token == lastMappingToken then
 		return
 	end
@@ -521,25 +748,33 @@ local function applyMappings(push)
 	end
 
 	local replaced = 0
-	local recording = ChangeHistoryService:TryBeginRecording("jStudio: replace animation ids")
+	local sources = {}
+	local recording = ChangeHistoryService:TryBeginRecording("jStudio: replace asset ids")
 
-	for index, instance in ipairs(scanRoots(false)) do
-		if index % SCAN_YIELD_EVERY == 0 then
-			task.wait()
+	eachAssetReference(scanRoots(false), kind, function(reference)
+		local newId = map[reference.assetId]
+		if not newId then
+			return
 		end
 
-		if instance:IsA("Animation") then
-			local assetId = animationIdOf(instance)
-			if assetId and map[assetId] then
-				instance.AnimationId = "rbxassetid://" .. map[assetId]
+		if reference.property then
+			if writeAsset(reference.instance, reference.property, reference.shape, newId) then
 				replaced += 1
 			end
-		elseif instance:IsA("LuaSourceContainer") then
-			local source = sourceOf(instance)
-			if source and source ~= "" then
-				local updated, changed = replaceInSource(source, map)
-				if changed then
+		else
+			sources[reference.instance] = true
+		end
+	end)
+
+	for instance in pairs(sources) do
+		local source = sourceOf(instance)
+		if source and source ~= "" then
+			local updated, changed = replaceInSource(source, map)
+			if changed then
+				local ok = pcall(function()
 					instance.Source = updated
+				end)
+				if ok then
 					replaced += 1
 				end
 			end
@@ -555,8 +790,12 @@ end
 local function reportSelection()
 	local count = 0
 	if #Selection:Get() > 0 then
-		eachAnimationReference(scanRoots(true), function()
-			count += 1
+		local seen = {}
+		eachAssetReference(scanRoots(true), "animation", function(reference)
+			if not seen[reference.assetId] then
+				seen[reference.assetId] = true
+				count += 1
+			end
 		end)
 	end
 	if count ~= pendingSelectionCount then

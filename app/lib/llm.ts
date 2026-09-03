@@ -187,9 +187,6 @@ const rejectsImages = /image|vision|multi.?modal|content.*type|invalid.*content/
 const carriesImages = (messages: Message[]): boolean =>
   messages.some((message) => message.role === 'user' && !!message.images?.length)
 
-// An image left in the transcript is re-sent on every later turn, so one picture
-// sent to a text-only model breaks every message that follows it. Drop the
-// images and leave a note in their place, so the model knows something was there.
 function withoutImages(messages: Message[]): Message[] {
   return messages.map((message) => {
     if (message.role !== 'user' || !message.images?.length) return message
@@ -228,8 +225,6 @@ export async function* streamChat(
     }
     return
   } catch (error) {
-    // The heuristic missed: this model does take text only. Nothing has been
-    // streamed yet, so the turn can be run again without the images.
     const raw = error instanceof Error ? error.message : String(error)
     if (started || blind || !attached || !rejectsImages.test(raw)) throw error
   }
@@ -295,9 +290,6 @@ async function* streamOpenAi(
   })
   await ensureOk(response, endpoint.provider)
 
-  // Providers disagree on where the usage lands: some send it once in a final
-  // frame, others repeat a running total in every frame. Keeping the last one
-  // and reporting it when the stream ends counts the call once either way.
   let counted: { inputTokens: number; outputTokens: number } | null = null
 
   for await (const data of frames(response)) {
@@ -462,7 +454,6 @@ async function* streamAnthropic(
       outputTokens = event.message.usage.output_tokens ?? 0
     }
     if (event.type === 'message_delta' && event.usage?.output_tokens !== undefined) {
-      // Anthropic reports the running total here, so the last one is the answer.
       outputTokens = event.usage.output_tokens
     }
     if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {

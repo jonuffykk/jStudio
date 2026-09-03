@@ -3,8 +3,11 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   Archive,
+  AudioLines,
   Blocks,
   Bot,
+  Box,
+  Boxes,
   BookOpen,
   Brain,
   ChartColumn,
@@ -59,6 +62,9 @@ const icons: Record<string, LucideIcon> = {
   agent: Bot,
   alert: TriangleAlert,
   archive: Archive,
+  audio: AudioLines,
+  assets: Boxes,
+  box: Box,
   book: BookOpen,
   build: Wrench,
   chart: ChartColumn,

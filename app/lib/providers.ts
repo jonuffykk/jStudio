@@ -92,9 +92,6 @@ const notForCode =
 
 export const usableForCode = (model: string) => !notForCode.test(model)
 
-// Models that read images, and models that are known to refuse them. A model in
-// neither list is treated as sighted: the request is attempted and, if the
-// provider rejects the images, `streamChat` retries once without them.
 const seesImages =
   /gpt-4o|gpt-4\.1|gpt-5|^o[34]|claude|gemini|llama-(3\.2-(11|90)b|4)|pixtral|vl\b|-vl-|vision|grok-[0-9]+(-|$)|internvl|glm-4v|minicpm-v|molmo/i
 

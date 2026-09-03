@@ -1,10 +1,22 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
-import { accounts as accountsApi, history as historyApi, pickFolder, spoof as spoofApi } from '@/app/lib/ipc'
-import { play } from '@/app/lib/sfx'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  accounts as accountsApi,
+  history as historyApi,
+  openExternal,
+  pickFolder,
+  spoof as spoofApi,
+} from '@/app/lib/ipc'
+import { play } from '@/app/lib/host'
 import { useStore, type SpoofStatus } from '@/app/lib/state'
-import { spoofOptions, type RunItem, type RunRecord, type SpoofOptions } from '@/app/lib/schemas'
+import {
+  spoofOptions,
+  type AssetKind,
+  type RunItem,
+  type RunRecord,
+  type SpoofOptions,
+} from '@/app/lib/schemas'
 import type { MessageKey } from '@/app/lib/i18n'
 import {
   Badge,
@@ -20,6 +32,7 @@ import {
   MenuItem,
   Modal,
   Progress,
+  Segmented,
   Select,
   Skeleton,
   Toggle,
@@ -27,6 +40,33 @@ import {
   cx,
   type Anchor,
 } from '@/app/ui/primitives'
+
+function summarise(detail: string): string {
+    const steps = detail.split(' · ')
+    const last = steps[steps.length - 1] ?? detail
+    return steps.length > 1 ? `${last}, after ${steps.length} tries` : last
+}
+
+const kindOne: Record<AssetKind, MessageKey> = {
+  animation: 'kind.animation',
+  audio: 'kind.audio',
+  image: 'kind.image',
+  mesh: 'kind.mesh',
+}
+
+const kindMany: Record<AssetKind, MessageKey> = {
+  animation: 'kind.animations',
+  audio: 'kind.audios',
+  image: 'kind.images',
+  mesh: 'kind.meshes',
+}
+
+const kindIcon: Record<AssetKind, string> = {
+  animation: 'film',
+  audio: 'audio',
+  image: 'image',
+  mesh: 'box',
+}
 
 const labels: Record<SpoofStatus, MessageKey> = {
   found: 'spoof.statusFound',
@@ -65,21 +105,39 @@ function bucketOf(value: number): MessageKey {
   return 'chat.older'
 }
 
-export function SpoofView() {
+export function AssetsView() {
   const store = useStore()
-  const { settings, status, spoofItems, spoofProgress, spoofRunning, spoofPaused, runs, t } = store
+  const { settings, status, plugin, spoofProgress, spoofPaused, spoofStatus, runs, t } = store
+
+  const [kind, setKindState] = useState<AssetKind>(settings.spoof.assetKind)
+
+  const ours = store.spoofKind === kind
+  const spoofItems = useMemo(() => (ours ? store.spoofItems : []), [ours, store.spoofItems])
+  const spoofRunning = ours && store.spoofRunning
 
   const [openRun, setOpenRun] = useState<string | null>(store.focusRun)
   const [showSettings, setShowSettings] = useState(false)
-  const [found, setFound] = useState<{ id: string; name: string }[] | null>(null)
+  const [found, setFound] = useState<
+    { id: string; name: string; creatorType: string; creatorId: string }[] | null
+  >(null)
   const [chosen, setChosen] = useState<string[]>([])
   const [scanning, setScanning] = useState(false)
+  const [stopping, setStopping] = useState(false)
   const [showArchived, setShowArchived] = useState(false)
   const listRef = useRef<HTMLDivElement>(null)
 
   const options = settings.spoof
   const account = store.activeAccount()
   const selected = runs.find((run) => run.id === openRun) ?? null
+
+  const switchKind = (next: AssetKind) => {
+    if (next === kind || spoofRunning) return
+    setFound(null)
+    setChosen([])
+    setOpenRun(null)
+    setKindState(next)
+    void store.patchSettings({ spoof: { ...options, assetKind: next } })
+  }
 
   const log: RunItem[] =
     selected === null
@@ -92,16 +150,32 @@ export function SpoofView() {
             status: 'uploaded',
             newId: pair.to,
             reason: '',
+            detail: '',
+            free: false,
             at: 0,
           }))
 
   useEffect(() => {
-    if (spoofRunning) listRef.current?.scrollTo({ top: listRef.current.scrollHeight })
-  }, [spoofItems, spoofRunning])
+    void spoofApi
+      .state()
+      .then((live) => useStore.setState({ spoofRunning: live.running, spoofPaused: live.paused }))
+      .catch(() => undefined)
+  }, [])
 
   useEffect(() => () => useStore.getState().openRun(null), [])
 
-  const blocked = !status.online
+  const rows = (found ?? []).map((item) => ({
+    ...item,
+    live: spoofItems.find((entry) => entry.id === item.id) ?? null,
+  }))
+
+  const running = spoofRunning || spoofItems.length > 0
+
+  const stalePlugin = plugin.installed && plugin.outdated
+
+  const blocked = stalePlugin
+    ? t('spoof.blockedPlugin')
+    : !status.online
     ? t('spoof.blockedStudio')
     : !options.downloadOnly && !account?.hasApiKey
       ? t('spoof.blockedKey')
@@ -110,13 +184,20 @@ export function SpoofView() {
   const scan = async () => {
     setScanning(true)
     setOpenRun(null)
+    store.resetSpoof()
+    useStore.setState({ spoofKind: kind })
     play('tap', settings.sounds)
 
     try {
-      const list = await spoofApi.scan(options.selectedOnly)
+      const list = await spoofApi.scan(options.selectedOnly, kind)
+      if (list.length === 0) {
+        setFound(null)
+        setChosen([])
+        store.toast(t('spoof.foundNone', { kind: t(kindMany[kind]) }), 'danger')
+        return
+      }
       setFound(list)
       setChosen(list.map((entry) => entry.id))
-      if (list.length === 0) store.toast(t('spoof.foundNone'), 'danger')
     } catch (error) {
       store.toast(error instanceof Error ? error.message : String(error), 'danger')
     } finally {
@@ -125,14 +206,25 @@ export function SpoofView() {
   }
 
   const start = async () => {
+    if (chosen.length === 0) {
+      setFound(null)
+      store.toast(t('spoof.foundNone', { kind: t(kindMany[kind]) }), 'danger')
+      return
+    }
     store.resetSpoof()
     setOpenRun(null)
-    setFound(null)
+    setStopping(false)
     play('send', settings.sounds)
-    useStore.setState({ spoofRunning: true, spoofPaused: false })
+    useStore.setState({ spoofRunning: true, spoofPaused: false, spoofKind: kind })
 
     try {
-      const result = await spoofApi.start({ ...options, only: chosen })
+      const result = await spoofApi.start({ ...options, only: chosen, assetKind: kind })
+      if (result.done + result.failed === 0) {
+        store.resetSpoof()
+        setFound(null)
+        store.toast(t('spoof.foundNone', { kind: t(kindMany[kind]) }), 'danger')
+        return
+      }
       play(result.failed > 0 ? 'error' : 'done', settings.sounds)
       store.toast(
         `${result.done} ${t('spoof.done')}, ${result.failed} ${t('spoof.failedCount')}`,
@@ -143,6 +235,7 @@ export function SpoofView() {
       play('error', settings.sounds)
       store.toast(error instanceof Error ? error.message : String(error), 'danger')
     } finally {
+      setStopping(false)
       useStore.setState({ spoofRunning: false, spoofPaused: false, spoofStatus: '' })
     }
   }
@@ -159,10 +252,11 @@ export function SpoofView() {
     }
   }
 
-  const visible = runs.filter((run) => !run.archived)
+  const mine = runs.filter((run) => run.assetKind === kind)
+  const visible = mine.filter((run) => !run.archived)
   const pinned = visible.filter((run) => run.pinned)
   const loose = visible.filter((run) => !run.pinned)
-  const archived = runs.filter((run) => run.archived)
+  const archived = mine.filter((run) => run.archived)
 
   const buckets: { key: MessageKey; items: RunRecord[] }[] = (
     ['chat.today', 'chat.yesterday', 'chat.week', 'chat.older'] as MessageKey[]
@@ -186,7 +280,7 @@ export function SpoofView() {
               <Skeleton className="h-8" />
               <Skeleton className="h-8" />
             </div>
-          ) : runs.length === 0 ? (
+          ) : mine.length === 0 ? (
             <p className="px-2 py-3 text-[13px] text-faint">{t('spoof.emptyRuns')}</p>
           ) : (
             <>
@@ -226,7 +320,16 @@ export function SpoofView() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-5">
-          <h1 className="shrink-0 text-sm font-semibold">{t('nav.animations')}</h1>
+          <Segmented
+            value={kind}
+            onChange={switchKind}
+            options={[
+              { value: 'animation' as const, label: t('nav.animations') },
+              { value: 'audio' as const, label: t('nav.audios') },
+              { value: 'image' as const, label: t('nav.images') },
+              { value: 'mesh' as const, label: t('nav.meshes') },
+            ]}
+          />
 
           {selected ? (
             <>
@@ -257,7 +360,7 @@ export function SpoofView() {
               ) : null
             ) : (
               <>
-                {spoofProgress.total > 0 ? (
+                {ours && spoofProgress.total > 0 ? (
                   <>
                     <Badge>
                       {spoofProgress.total} {t('spoof.total')}
@@ -273,7 +376,32 @@ export function SpoofView() {
                   </>
                 ) : null}
 
-                {found ? (
+                {spoofRunning ? (
+                  <>
+                    <IconButton
+                      icon={spoofPaused ? 'play' : 'pause'}
+                      disabled={stopping}
+                      title={spoofPaused ? t('spoof.resume') : t('spoof.pause')}
+                      onClick={() => {
+                        void (async () => {
+                          const paused = spoofPaused ? await spoofApi.resume() : await spoofApi.pause()
+                          useStore.setState({ spoofPaused: paused })
+                        })()
+                      }}
+                    />
+                    <IconButton
+                      icon="stop"
+                      tone="danger"
+                      disabled={stopping}
+                      title={t('spoof.stop')}
+                      onClick={() => {
+                        setStopping(true)
+                        useStore.setState({ spoofPaused: false, spoofStatus: t('spoof.stopping') })
+                        void spoofApi.stop()
+                      }}
+                    />
+                  </>
+                ) : found && !running ? (
                   <>
                     <span className="text-[13px] text-dim">
                       {chosen.length}/{found.length}
@@ -291,23 +419,14 @@ export function SpoofView() {
                       {t('spoof.run')}
                     </Button>
                   </>
-                ) : spoofRunning ? (
+                ) : found ? (
                   <>
-                    <IconButton
-                      icon={spoofPaused ? 'play' : 'pause'}
-                      title={spoofPaused ? t('spoof.resume') : t('spoof.pause')}
-                      onClick={() => {
-                        if (spoofPaused) void spoofApi.resume()
-                        else void spoofApi.pause()
-                        useStore.setState({ spoofPaused: !spoofPaused })
-                      }}
-                    />
-                    <IconButton
-                      icon="stop"
-                      tone="danger"
-                      title={t('spoof.stop')}
-                      onClick={() => void spoofApi.stop()}
-                    />
+                    <Button size="sm" tone="ghost" onClick={() => setFound(null)}>
+                      {t('common.close')}
+                    </Button>
+                    <Button size="sm" icon="refresh" onClick={() => void scan()}>
+                      {t('spoof.scanAgain')}
+                    </Button>
                   </>
                 ) : scanning ? (
                   <span className="flex items-center gap-2 text-[13px] text-faint">
@@ -328,7 +447,12 @@ export function SpoofView() {
         </header>
 
         {spoofRunning && !selected ? (
-          <Progress value={spoofProgress.done + spoofProgress.failed} total={Math.max(spoofProgress.total, 1)} />
+          <>
+            <Progress value={spoofProgress.done + spoofProgress.failed} total={Math.max(spoofProgress.total, 1)} />
+            {spoofStatus ? (
+              <p className="border-b border-line px-5 py-1.5 text-xs text-faint">{spoofStatus}</p>
+            ) : null}
+          </>
         ) : null}
 
         {blocked && !spoofRunning && !selected ? (
@@ -381,47 +505,97 @@ export function SpoofView() {
             )}
           </div>
         ) : found ? (
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            <div className="flex items-center gap-3 border-b border-line px-5 py-2.5">
-              <button
-                type="button"
-                onClick={() => setChosen(chosen.length === found.length ? [] : found.map((entry) => entry.id))}
-                className="text-[13px] text-dim transition-colors hover:text-text"
-              >
-                {chosen.length === found.length ? t('spoof.selectNone') : t('spoof.selectAll')}
-              </button>
-              <span className="ml-auto text-xs text-faint">{t('spoof.pickHint')}</span>
-            </div>
+          <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
+            {!running ? (
+              <div className="flex items-center gap-3 border-b border-line px-5 py-2.5">
+                <button
+                  type="button"
+                  onClick={() => setChosen(chosen.length === found.length ? [] : found.map((entry) => entry.id))}
+                  className="text-[13px] text-dim transition-colors hover:text-text"
+                >
+                  {chosen.length === found.length ? t('spoof.selectNone') : t('spoof.selectAll')}
+                </button>
+                <span className="ml-auto text-xs text-faint">{t('spoof.pickHint')}</span>
+              </div>
+            ) : null}
 
             <ul className="divide-y divide-line">
-              {found.map((item) => {
+              {rows.map((item) => {
                 const picked = chosen.includes(item.id)
 
                 return (
                   <li key={item.id}>
                     <button
                       type="button"
+                      disabled={running}
                       onClick={() =>
                         setChosen(
                           picked ? chosen.filter((entry) => entry !== item.id) : [...chosen, item.id]
                         )
                       }
-                      className="flex w-full items-center gap-3 px-5 py-2.5 text-left transition-colors hover:bg-raised"
+                      className="group flex w-full items-center gap-3 px-5 py-2.5 text-left transition-colors enabled:hover:bg-raised"
                     >
-                      <span
-                        className={cx(
-                          'flex size-4 shrink-0 items-center justify-center rounded border transition-colors',
-                          picked ? 'border-accent bg-accent text-white' : 'border-focus'
-                        )}
-                      >
-                        {picked ? <Icon name="check" className="size-3" /> : null}
-                      </span>
+                      {running ? null : (
+                        <span
+                          className={cx(
+                            'flex size-4 shrink-0 items-center justify-center rounded border transition-colors',
+                            picked ? 'border-accent bg-accent text-white' : 'border-focus'
+                          )}
+                        >
+                          {picked ? <Icon name="check" className="size-3" /> : null}
+                        </span>
+                      )}
+
                       <span className="min-w-0 flex-1">
                         <span className={cx('block truncate text-[13px]', !picked && 'text-faint')}>
-                          {item.name}
+                          {item.live?.name || item.name}
                         </span>
-                        <span className="block truncate font-mono text-xs text-faint">{item.id}</span>
+                        <span className="block truncate font-mono text-xs text-faint">
+                          {item.id}
+                          {item.live?.newId ? ` \u2192 ${item.live.newId}` : ''}
+                        </span>
+                        {item.live?.status === 'failed' && item.live.detail ? (
+                          <span
+                            title={item.live.detail}
+                            className="mt-0.5 block truncate font-mono text-[11px] text-danger/60"
+                          >
+                            {summarise(item.live.detail)}
+                          </span>
+                        ) : null}
                       </span>
+
+                      {item.live?.free ? (
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          title={t('spoof.takeFreeHint')}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            void openExternal(`https://create.roblox.com/store/asset/${item.id}`)
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              void openExternal(`https://create.roblox.com/store/asset/${item.id}`)
+                            }
+                          }}
+                          className="flex h-7 shrink-0 items-center gap-1.5 rounded-[var(--radius-control)] border border-line bg-bg px-2 text-xs text-text transition-colors hover:border-focus"
+                        >
+                          <Icon name="external" className="size-3.5" />
+                          {t('spoof.takeFree')}
+                        </span>
+                      ) : null}
+
+                      {item.live?.reason ? (
+                        <span className="shrink-0 text-xs text-danger" title={item.live.detail || item.live.reason}>
+                          {item.live.reason}
+                        </span>
+                      ) : null}
+
+                      {item.live ? (
+                        <Badge tone={tones[item.live.status]}>{t(labels[item.live.status])}</Badge>
+                      ) : running && picked ? (
+                        <Spinner className="size-3.5" />
+                      ) : null}
                     </button>
                   </li>
                 )
@@ -431,7 +605,7 @@ export function SpoofView() {
         ) : (
           <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
             {spoofItems.length === 0 ? (
-              <EmptyState icon="film" title={t('spoof.empty')} />
+              <EmptyState icon={kindIcon[kind]} title={t('spoof.empty', { kind: t(kindOne[kind]) })} />
             ) : (
               <ul className="divide-y divide-line">
                 {spoofItems.map((item) => (
@@ -443,7 +617,7 @@ export function SpoofView() {
                       <p className="truncate text-[13px]">{item.name}</p>
                       <p className="truncate font-mono text-xs text-faint">
                         {item.id}
-                        {item.newId ? ` → ${item.newId}` : ''}
+                        {item.newId ? ` \u2192 ${item.newId}` : ''}
                       </p>
                     </div>
                     {item.reason ? <span className="text-xs text-danger">{item.reason}</span> : null}

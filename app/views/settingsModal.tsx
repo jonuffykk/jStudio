@@ -4,7 +4,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { accounts as accountsApi, history as historyApi, isDesktop, mcpHost, openExternal, secrets } from '@/app/lib/ipc'
 import { groupModels, isFreeModel } from '@/app/lib/llm'
 import { findProvider, pickDefaultModel, providers } from '@/app/lib/providers'
-import { builtinCatalog, importCatalog } from '@/app/lib/registry'
+import { builtinCatalog, importCatalog } from '@/app/lib/net'
 import { languageLabels, type Language, type MessageKey } from '@/app/lib/i18n'
 import { slugify } from '@/app/lib/skills'
 import { systemLanguage, useStore } from '@/app/lib/state'
@@ -892,10 +892,6 @@ const wipeLabels: Record<Wipe, MessageKey> = {
   all: 'settings.clearAll',
 }
 
-/**
- * Each of these throws something away for good, so they are spelled out one by
- * one rather than hidden behind a single button that means more than it says.
- */
 async function wipe(target: Wipe): Promise<void> {
   const store = useStore.getState()
   const everything = target === 'all'
@@ -918,8 +914,6 @@ async function wipe(target: Wipe): Promise<void> {
     await store.refreshAccounts()
   }
   if (everything || target === 'settings') {
-    // The key lives in the system vault, not in the settings file, so it is
-    // cleared by hand; the language and the theme go back to what Windows says.
     for (const provider of providers) await secrets.set(`apiKey.${provider.id}`, '')
 
     const fresh = settingsSchema.parse({})

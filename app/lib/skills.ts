@@ -43,7 +43,7 @@ export const builtinSkills: Skill[] = [
     name: 'typed-luau',
     description: 'Strict mode and annotations in modules.',
     builtin: true,
-    enabled: false,
+    enabled: true,
     instructions: `- Start every ModuleScript with --!strict.
 - Annotate parameters and return types of public functions, and declare the type the module exports.
 - Use table.freeze on constant tables.
@@ -54,7 +54,7 @@ export const builtinSkills: Skill[] = [
     name: 'animation-hygiene',
     description: 'Track lifecycle, priorities and ownership of animation assets.',
     builtin: true,
-    enabled: false,
+    enabled: true,
     instructions: `- Load animations through Animator, never through Humanoid:LoadAnimation.
 - Set AnimationPriority deliberately. Action beats Movement beats Idle beats Core.
 - Stop and destroy AnimationTracks when the character dies or the tool is unequipped.

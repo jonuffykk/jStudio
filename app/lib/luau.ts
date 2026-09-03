@@ -1,6 +1,5 @@
 import type { Action } from '@/app/lib/schemas'
 
-/** Escapes a value into a Lua quoted string, so no place content can break out of the literal. */
 function quote(value: string): string {
   return `"${value.replace(/[\\"]/g, '\\$&').replace(/\n/g, '\\n').replace(/\r/g, '\\r')}"`
 }
@@ -46,10 +45,6 @@ local function resolve(path, create, className)
 	return current
 end`
 
-/**
- * The same edit the plugin would make, as Luau the Studio MCP can run. It is wrapped in a
- * ChangeHistoryService recording so one proposal stays one undo, exactly as through the plugin.
- */
 export function luauFor(action: Action): string {
   const path = quote(action.path)
 

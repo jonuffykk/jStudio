@@ -34,7 +34,6 @@ export function studioMcp(connections: McpConnection[]): McpConnection | undefin
   )
 }
 
-/** The MCP addresses a specific Studio window, so the id has to be discovered before the first call. */
 async function sessionArgs(connection: McpConnection, tool: McpTool): Promise<Record<string, unknown>> {
   const keys = Object.keys(properties(tool))
   const key = keys.find((entry) => /^studio(_?id)?$/i.test(entry))
@@ -71,10 +70,6 @@ async function applyThroughPlugin(action: Action): Promise<ApplyResult> {
   return { ok: false, message: 'Studio never answered. Is the plugin still connected?', channel: 'plugin' }
 }
 
-/**
- * The MCP reaches the whole Instance API, the plugin bridge reaches only the properties it knows
- * about, so the MCP goes first and the plugin catches whatever it cannot serve. Both stay live.
- */
 export async function applyAction(
   action: Action,
   connections: McpConnection[],
@@ -87,7 +82,6 @@ export async function applyAction(
       const result = await applyThroughMcp(action, connection)
       if (result?.ok || (result && !pluginOnline)) return result
     } catch {
-      // Fall through to the plugin rather than losing the proposal.
     }
   }
 

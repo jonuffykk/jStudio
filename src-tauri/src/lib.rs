@@ -245,6 +245,7 @@ async fn spoofStart(
     )
     .await;
 
+    state.control.finish();
     if result.is_err() {
         state.control.stop();
     }
@@ -252,24 +253,35 @@ async fn spoofStart(
 }
 
 #[tauri::command]
-fn spoofPause(state: tauri::State<AppState>) {
-    state.control.pause()
+fn spoofPause(state: tauri::State<AppState>) -> bool {
+    state.control.pause();
+    state.control.isPaused()
 }
 
 #[tauri::command]
-fn spoofResume(state: tauri::State<AppState>) {
-    state.control.resume()
+fn spoofResume(state: tauri::State<AppState>) -> bool {
+    state.control.resume();
+    state.control.isPaused()
 }
 
 #[tauri::command]
-async fn spoofScan(state: tauri::State<'_, AppState>, selectedOnly: bool) -> Result<Value, String> {
-    spoof::scan(state.bridge.clone(), selectedOnly).await
+async fn spoofScan(
+    state: tauri::State<'_, AppState>,
+    selectedOnly: bool,
+    assetKind: String,
+) -> Result<Value, String> {
+    spoof::scan(state.bridge.clone(), selectedOnly, assetKind).await
 }
 
 #[tauri::command]
 fn spoofStop(state: tauri::State<AppState>) {
     state.control.stop();
     state.bridge.cancelScan();
+}
+
+#[tauri::command]
+fn spoofRunning(state: tauri::State<AppState>) -> Value {
+    json!({ "running": state.control.isRunning(), "paused": state.control.isPaused() })
 }
 
 #[tauri::command]
@@ -321,10 +333,18 @@ fn runApply(
         return Err("That run replaced no IDs, so there is nothing to apply.".into());
     }
 
+    let assetKind = run
+        .get("assetKind")
+        .and_then(Value::as_str)
+        .unwrap_or("animation")
+        .to_owned();
+
     let count = lines.len();
-    state
-        .bridge
-        .pushMappings(lines, format!("{id}:{revert}:{}", bridge::nowMs()));
+    state.bridge.pushMappings(
+        lines,
+        format!("{id}:{revert}:{}", bridge::nowMs()),
+        assetKind,
+    );
     store::updateRun(&app, &id, !revert)?;
 
     Ok(json!({ "count": count, "applied": !revert }))
@@ -441,6 +461,7 @@ pub fn run() {
             spoofPause,
             spoofResume,
             spoofStop,
+            spoofRunning,
             spoofScan,
             runsLoad,
             runApply,
@@ -457,8 +478,6 @@ pub fn run() {
         ])
         .setup(move |app| {
             if let Some(window) = app.get_webview_window("main") {
-                // The window is painted before the page loads, so the stored choice is
-                // read here. "system", or nothing stored yet, follows Windows.
                 let stored = store::loadSettings(app.handle())
                     .get("theme")
                     .and_then(Value::as_str)
@@ -480,8 +499,6 @@ pub fn run() {
                 };
 
                 let _ = window.set_background_color(Some(tone));
-                // The window is built hidden, so it is centred here rather than at creation: the
-                // splash then fades in on the middle of the screen the person is actually on.
                 let _ = window.center();
                 let _ = window.show();
                 let _ = window.set_focus();

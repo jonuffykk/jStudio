@@ -19,7 +19,7 @@ export function OnboardingView() {
   const [signingIn, setSigningIn] = useState(false)
   const [useCookie, setUseCookie] = useState(false)
   const [cookie, setCookie] = useState('')
-  const [opened, setOpened] = useState<string | null>(null)
+  const [opened, setOpened] = useState('intent')
 
   const provider = findProvider(settings.providerId)
   const account = store.activeAccount()
@@ -35,17 +35,19 @@ export function OnboardingView() {
     void store.patchSettings({ intent: next })
   }
 
-  // The first step that is not finished yet, so the person always lands on the
-  // one thing left to do instead of a wall of open panels.
-  const current = !chose
-    ? 'intent'
-    : wants.includes('build') && !aiDone
-      ? 'provider'
-      : wants.includes('animations') && !robloxDone
-        ? 'roblox'
-        : wants.includes('animations') && !cloudDone
-          ? 'cloud'
-          : 'done'
+  const steps = [
+    'intent',
+    ...(wants.includes('build') ? ['provider'] : []),
+    ...(wants.includes('animations') ? ['roblox', 'cloud'] : []),
+  ]
+
+  const isDone = (step: string) =>
+    step === 'intent' ? chose : step === 'provider' ? aiDone : step === 'roblox' ? robloxDone : cloudDone
+
+  const advance = () => {
+    const at = steps.indexOf(opened)
+    setOpened(steps.find((step, index) => index > at && !isDone(step)) ?? steps[at + 1] ?? '')
+  }
 
   const refreshModels = async () => {
     setLoadingModels(true)
@@ -95,9 +97,8 @@ export function OnboardingView() {
           title={t('onboard.intent')}
           body={t('onboard.intentBody')}
           done={chose}
-          current={current}
-          opened={opened}
-          setOpened={setOpened}
+          open={opened === 'intent'}
+          onToggle={() => setOpened(opened === 'intent' ? '' : 'intent')}
         >
           <div className="grid gap-2">
             <Choice
@@ -116,18 +117,20 @@ export function OnboardingView() {
             />
           </div>
           <p className="text-xs text-faint">{t('onboard.intentBoth')}</p>
+          <Button tone="primary" full disabled={!chose} onClick={advance}>
+            {t('common.continue')}
+          </Button>
         </Step>
 
         {wants.includes('build') ? (
           <Step
             id="provider"
+            open={opened === 'provider'}
+            onToggle={() => setOpened(opened === 'provider' ? '' : 'provider')}
             index={(index += 1)}
             title={t('onboard.provider')}
             body={t('onboard.providerBody')}
             done={aiDone}
-            current={current}
-            opened={opened}
-            setOpened={setOpened}
           >
             <Field label={t('settings.provider')} hint={provider.hint}>
               <Select
@@ -188,19 +191,22 @@ export function OnboardingView() {
                 )}
               </div>
             </Field>
+
+            <Button tone="primary" full disabled={!aiDone} onClick={advance}>
+              {t('common.continue')}
+            </Button>
           </Step>
         ) : null}
 
         {wants.includes('animations') ? (
           <Step
             id="roblox"
+            open={opened === 'roblox'}
+            onToggle={() => setOpened(opened === 'roblox' ? '' : 'roblox')}
             index={(index += 1)}
             title={t('onboard.roblox')}
             body={t('onboard.robloxBody')}
             done={robloxDone}
-            current={current}
-            opened={opened}
-            setOpened={setOpened}
           >
             {account ? (
               <div className="flex items-center gap-3 rounded-[var(--radius-control)] border border-line bg-bg px-3 py-2.5">
@@ -272,13 +278,12 @@ export function OnboardingView() {
         {wants.includes('animations') ? (
           <Step
             id="cloud"
+            open={opened === 'cloud'}
+            onToggle={() => setOpened(opened === 'cloud' ? '' : 'cloud')}
             index={(index += 1)}
             title={t('onboard.cloudKey')}
             body={t('onboard.cloudKeyBody')}
             done={cloudDone}
-            current={current}
-            opened={opened}
-            setOpened={setOpened}
           >
             {account ? (
               <CloudKeyGuide accountId={account.id} done={cloudDone} />
@@ -309,11 +314,6 @@ export function OnboardingView() {
   )
 }
 
-/**
- * Roblox has no API that mints an Open Cloud key, so this cannot be done for the
- * person. What it can do is name every field to fill, hand over the values to
- * paste, and check the finished key before they walk away believing it works.
- */
 export function CloudKeyGuide({
   accountId,
   done,
@@ -338,17 +338,23 @@ export function CloudKeyGuide({
     setVerdict(null)
 
     try {
-      const { verdict: result } = await accountsApi.probeApiKey(trimmed)
-
-      if (result === 'unauthorized' || result === 'forbidden') {
-        setVerdict(result === 'unauthorized' ? 'cloud.unauthorized' : 'cloud.forbidden')
-        return
-      }
-
       await accountsApi.setApiKey(accountId, trimmed)
       await store.refreshAccounts()
       setKey('')
-      setVerdict(result === 'ok' ? 'cloud.ok' : 'cloud.unchecked')
+
+      const { verdict: result } = await accountsApi.probeApiKey(trimmed).catch(() => ({
+        verdict: 'unknown' as const,
+      }))
+
+      setVerdict(
+        result === 'ok'
+          ? 'cloud.ok'
+          : result === 'unauthorized'
+            ? 'cloud.unauthorized'
+            : result === 'forbidden'
+              ? 'cloud.forbidden'
+              : 'cloud.unchecked'
+      )
       onSaved?.()
     } catch (error) {
       store.toast(error instanceof Error ? error.message : String(error), 'danger')
@@ -380,19 +386,29 @@ export function CloudKeyGuide({
         <Line n={2} text={t('cloud.step2')} copy="jStudio" />
         <Line n={3} text={t('cloud.step3')} copy="Assets" />
         <Line n={4} text={t('cloud.step4')} />
-        <Line n={5} text={t('cloud.step5')} copy="0.0.0.0/0" />
-        <Line n={6} text={t('cloud.step6')} />
+        <Line n={5} text={t('cloud.step6')} />
       </ol>
 
       <Field label={t('cloud.paste')}>
         <div className="flex gap-2">
-          <Input type="password" value={key} onChange={setKey} placeholder="•••••" mono />
+          <Input
+            type="password"
+            value={key}
+            onChange={setKey}
+            placeholder="•••••"
+            mono
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void save()
+            }}
+          />
           {checking ? (
             <span className="flex size-8 items-center justify-center">
               <Spinner />
             </span>
           ) : (
-            <IconButton icon="check" title={t('cloud.check')} disabled={!key.trim()} onClick={() => void save()} />
+            <Button size="sm" disabled={!key.trim()} onClick={() => void save()}>
+              {t('common.save')}
+            </Button>
           )}
         </div>
       </Field>
@@ -486,9 +502,8 @@ function Step({
   title,
   body,
   done,
-  current,
-  opened,
-  setOpened,
+  open,
+  onToggle,
   children,
 }: {
   id: string
@@ -496,16 +511,15 @@ function Step({
   title: string
   body: string
   done: boolean
-  current: string
-  opened: string | null
-  setOpened: (id: string | null) => void
+  open: boolean
+  onToggle: () => void
   children: ReactNode
 }) {
   const t = useStore((state) => state.t)
-  const open = opened === null ? current === id : opened === id
 
   return (
     <section
+      key={id}
       className={cx(
         'overflow-hidden rounded-[var(--radius-panel)] border bg-surface transition-colors',
         done ? 'border-ok/40' : open ? 'border-line' : 'border-line/60'
@@ -513,8 +527,8 @@ function Step({
     >
       <button
         type="button"
-        onClick={() => setOpened(open ? '' : id)}
-        className="flex w-full items-center gap-3 border-b border-line px-4 py-3 text-left transition-colors hover:bg-raised/40"
+        onClick={onToggle}
+        className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-raised/40"
       >
         <span
           className={cx(
@@ -532,7 +546,7 @@ function Step({
         <Icon name="chevron" className={cx('size-4 text-faint transition-transform', open && 'rotate-90')} />
       </button>
 
-      {open ? <div className="space-y-3 p-4">{children}</div> : null}
+      {open ? <div className="space-y-3 border-t border-line p-4">{children}</div> : null}
     </section>
   )
 }
