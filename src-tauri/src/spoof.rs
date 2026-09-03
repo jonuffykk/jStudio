@@ -518,7 +518,6 @@ impl Session {
             return;
         }
 
-
         self.item(&item.id, &item.name, "uploading", json!({}));
         let Ok(_slot) = self.uploadSlots.acquire().await else {
             return;
