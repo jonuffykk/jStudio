@@ -2,13 +2,13 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { accounts as accountsApi, appWindow, plugin as pluginApi } from '@/app/lib/ipc'
-import { play, unlockAudio } from '@/app/lib/sfx'
+import { play, unlockAudio } from '@/app/lib/host'
 import { useStore, type View } from '@/app/lib/state'
 import { Button, Confirm, Icon, IconButton, cx } from '@/app/ui/primitives'
 import { OnboardingView } from '@/app/views/onboarding'
 import { HomeView } from '@/app/views/home'
 import { BuildView } from '@/app/views/build'
-import { SpoofView } from '@/app/views/spoof'
+import { AssetsView } from '@/app/views/assets'
 import { AccountsModal } from '@/app/views/accountsModal'
 import { SettingsModal } from '@/app/views/settingsModal'
 import type { MessageKey } from '@/app/lib/i18n'
@@ -28,7 +28,7 @@ const effortLabels: Record<'low' | 'medium' | 'high', MessageKey> = {
 const navigation: { view: View; icon: string; label: MessageKey }[] = [
   { view: 'home', icon: 'home', label: 'nav.home' },
   { view: 'build', icon: 'build', label: 'nav.build' },
-  { view: 'spoof', icon: 'film', label: 'nav.animations' },
+  { view: 'assets', icon: 'assets', label: 'nav.assets' },
 ]
 
 export function Shell() {
@@ -61,7 +61,7 @@ export function Shell() {
       if (browserKeys.has(key)) event.preventDefault()
       if (!state.settings.onboarded) return
 
-      const views: View[] = ['home', 'build', 'spoof']
+      const views: View[] = ['home', 'build', 'assets']
       const view = views[Number(key) - 1]
 
       if (view) {
@@ -137,15 +137,13 @@ export function Shell() {
             <Pane active={store.view === 'build'}>
               {store.aiReady() ? <BuildView /> : <StillNeeded need="build" />}
             </Pane>
-            <Pane active={store.view === 'spoof'}>
-              {store.robloxReady() ? (
-                store.cloudReady() ? (
-                  <SpoofView />
-                ) : (
-                  <StillNeeded need="cloud" />
-                )
-              ) : (
+            <Pane active={store.view === 'assets'}>
+              {!store.robloxReady() ? (
                 <StillNeeded need="animations" />
+              ) : !store.cloudReady() ? (
+                <StillNeeded need="cloud" />
+              ) : (
+                <AssetsView />
               )}
             </Pane>
           </main>
@@ -304,7 +302,7 @@ function Sidebar() {
         {menuOpen ? (
           <>
             <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
-            <div className="riseIn absolute bottom-0 left-12 z-50 w-52 overflow-hidden rounded-[var(--radius-panel)] border border-line bg-surface p-1.5">
+            <div className="riseIn absolute bottom-0 left-14 z-50 w-52 -translate-y-[5%] overflow-hidden rounded-[var(--radius-panel)] border border-line bg-surface p-1.5">
               {account ? (
                 <div className="mb-1 flex items-center gap-2.5 border-b border-line px-2.5 pb-2 pt-1.5">
                   {account.avatarUrl ? (
@@ -586,11 +584,6 @@ function Toasts() {
   )
 }
 
-/**
- * Half of jStudio needs a model key, the other half needs a Roblox account, and
- * nobody should have to hand over both to use one of them. Whichever half was
- * left unconfigured says so here, and opens exactly the panel that fixes it.
- */
 function StillNeeded({ need }: { need: 'build' | 'animations' | 'cloud' }) {
   const store = useStore()
   const { t } = store

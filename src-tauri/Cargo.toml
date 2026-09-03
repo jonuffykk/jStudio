@@ -1,6 +1,6 @@
 [package]
 name = "jstudio"
-version = "1.1.0"
+version = "1.2.0"
 description = "AI pair programmer and animation pipeline for Roblox Studio"
 authors = ["jStudio contributors"]
 license = "MIT"
@@ -27,7 +27,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "process", "io-util", "sync", "time", "fs"] }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["limit"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart", "gzip"] }
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
 
 [target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]

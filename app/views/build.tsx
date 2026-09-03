@@ -8,7 +8,7 @@ import { applyAction, studioMcp } from '@/app/lib/apply'
 import { describeError, groupModels, isFreeModel, resolveEndpoint, streamChat, type Endpoint } from '@/app/lib/llm'
 import { spoof as spoofApi } from '@/app/lib/ipc'
 import { findProvider, supportsVision } from '@/app/lib/providers'
-import { play } from '@/app/lib/sfx'
+import { play } from '@/app/lib/host'
 import { useStore } from '@/app/lib/state'
 import {
   spoofOptions,
@@ -75,6 +75,8 @@ const bubble = (role: 'user' | 'assistant', content: string, images: string[] = 
   questions: [],
   resolved: false,
   folded: false,
+  thinkMs: 0,
+  replyMs: 0,
   plan: null,
   memories: [],
 })
@@ -101,7 +103,6 @@ function ago(value: number, language: string): string {
   return new Date(value).toLocaleDateString()
 }
 
-/** Token counts read at a glance: 892, 8k, 9.5k, 990.5k, 1M. No trailing .0, and k rolls into M. */
 function compact(value: number): string {
   const trim = (scaled: number) => String(Math.round(scaled * 10) / 10)
 
@@ -110,11 +111,6 @@ function compact(value: number): string {
   return String(value)
 }
 
-/**
- * Naming runs on the same provider but never on the same reasoning budget: a thinking model spends
- * its whole allowance before the first visible token, and the old fifteen second cap turned every
- * such run into the fallback, which is why chats ended up named after the message.
- */
 async function generateTitle(endpoint: Endpoint, prompt: string, onSpend?: Spend): Promise<string> {
   const fallback = prompt.trim().replace(/\s+/g, ' ').slice(0, 24)
 
@@ -269,8 +265,6 @@ export function BuildView() {
   const listRef = useRef<Bubble[]>([])
   const runningRef = useRef(false)
   const savedAt = useRef(0)
-  // A run belongs to the conversation it started in, not to whichever one happens to be on screen,
-  // so leaving a chat mid answer neither kills it nor spills its messages into the next one.
   const runningIn = useRef<string | null>(null)
   const parked = useRef(new Map<string, Bubble[]>())
   const usages = useRef(new Map<string, ChatUsage>())
@@ -293,15 +287,10 @@ export function BuildView() {
     [settings.providerId, settings.customBaseUrl, apiKey, settings.model, settings.temperature, settings.effort]
   )
 
-  // Switching to a text-only model empties the tray, so nothing is sent that the model cannot read.
   useEffect(() => {
     if (!sighted) setImages([])
   }, [sighted])
 
-  /**
-   * The messages of any conversation: the live list when it is on screen, the parked copy while a
-   * run writes to it in the background, and the saved copy otherwise.
-   */
   const listOf = useCallback((id: string): Bubble[] => {
     if (id === conversationIdRef.current) return listRef.current
     return (
@@ -325,7 +314,6 @@ export function BuildView() {
     [commitTo]
   )
 
-  /** Books one provider call against the chat that caused it, and against the day. */
   const bank = useCallback((id: string, input: number, output: number) => {
     if (input <= 0 && output <= 0) return
 
@@ -347,7 +335,6 @@ export function BuildView() {
 
   const persistTo = useCallback(
     (id: string, title?: string) => {
-      // A conversation deleted mid answer must not be written back by the run still finishing it.
       if (discarded.current.has(id)) return
 
       const list = listOf(id)
@@ -376,7 +363,6 @@ export function BuildView() {
     if (stick.current) bottom.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  /** Hands the visible chat over to the background and brings the target one forward. */
   const switchTo = useCallback(
     (id: string, messages: Bubble[] | null, spent?: ChatUsage) => {
       const leaving = conversationIdRef.current
@@ -421,8 +407,6 @@ export function BuildView() {
   useEffect(() => {
     const ids = new Set(conversations.map((entry) => entry.id))
 
-    // A run keeps writing to the chat it belongs to, so deleting that chat has to stop it, or the
-    // next save would bring the deleted conversation back.
     const running = runningIn.current
     if (running && known.current.has(running) && !ids.has(running)) {
       discarded.current.add(running)
@@ -492,6 +476,9 @@ export function BuildView() {
       const controller = new AbortController()
       abort.current = controller
 
+      const startedAt = Date.now()
+      let firstOutputAt = 0
+
       const update = (patch: (entry: Bubble) => Bubble) => {
         const current = listOf(target)
         const last = current[current.length - 1]
@@ -512,9 +499,9 @@ export function BuildView() {
             .map(({ role, content, images: attached }) => ({ role, content, images: attached })),
           nodes,
           truncated,
-          skills: settings.skills.filter((entry) => entry.enabled),
+          skills: [],
           forcedSkills: settings.skills.filter((entry) => forcedIds.includes(entry.id)),
-          offered: settings.skills.filter((entry) => !entry.enabled && !forcedIds.includes(entry.id)),
+          offered: settings.skills.filter((entry) => entry.enabled && !forcedIds.includes(entry.id)),
           plan: settings.mode === 'plan',
           instructions: settings.customInstructions,
           memories: settings.memory.enabled ? settings.memory.items.map((entry) => entry.text) : [],
@@ -583,22 +570,37 @@ export function BuildView() {
           canEditPlace: !!studioMcp(mcp) || status.online,
           maxTurns: settings.maxTurns,
           signal: controller.signal,
-          animations: {
+          assets: {
             respoof: async (options) => {
-              store.resetSpoof()
               const parsed = spoofOptions.parse({ ...settings.spoof, ...options })
-              const result = await spoofApi.start(parsed)
-              await store.refreshRuns()
-              return `The run finished with ${result.done} animation(s) replaced and ${result.failed} failure(s).`
+              store.resetSpoof()
+              useStore.setState({
+                spoofRunning: true,
+                spoofPaused: false,
+                spoofKind: parsed.assetKind,
+              })
+
+              try {
+                const result = await spoofApi.start(parsed)
+                await store.refreshRuns()
+                return `${result.done} replaced, ${result.failed} failed.`
+              } finally {
+                useStore.setState({ spoofRunning: false, spoofPaused: false, spoofStatus: '' })
+              }
             },
           },
         })
 
         for await (const event of stream as AsyncGenerator<AgentEvent>) {
+          if (event.type === 'text' || event.type === 'toolStart') {
+            if (!firstOutputAt) firstOutputAt = Date.now()
+          }
+
           if (event.type === 'text')
             update((entry) => ({
               ...entry,
               content: entry.content + event.text,
+              thinkMs: entry.thinkMs || firstOutputAt - startedAt,
               steps: appendSegment(entry.steps, 'text', event.text),
             }))
           else if (event.type === 'reasoning')
@@ -673,12 +675,12 @@ export function BuildView() {
           play('error', settings.sounds)
         }
       } finally {
-        // A stop or a failure leaves the call it was on unresolved, and a step that never settles
-        // would spin for the life of the conversation.
         update((entry) => ({
           ...entry,
           streaming: false,
           at: Date.now(),
+          thinkMs: entry.thinkMs || (firstOutputAt ? firstOutputAt - startedAt : 0),
+          replyMs: Date.now() - startedAt,
           steps: entry.steps.map((step) =>
             step.status === 'running' ? { ...step, status: 'failed' as const } : step
           ),
@@ -787,8 +789,6 @@ export function BuildView() {
           ])
         }
 
-        // Compressing frees the context, which the ring reads from the folded
-        // messages on its own. What the chat already spent stays spent.
         play('done', settings.sounds)
         persist()
       } catch (error) {
@@ -809,7 +809,6 @@ export function BuildView() {
     return true
   }
 
-  // A run belongs to one chat; the others wait rather than pretending they can send.
   const elsewhere = runningChat !== null && runningChat !== conversationId
 
   const send = useCallback(() => {
@@ -922,7 +921,6 @@ export function BuildView() {
       className: 'bg-accent/60',
     },
     {
-      // A tool costs its whole schema, not just its name and description.
       label: t('build.sliceTools'),
       tokens:
         builtinToolsSize() +
@@ -1265,9 +1263,6 @@ function UsagePill({ usage, slices }: { usage: ChatUsage; slices: Slice[] }) {
   const used = Math.min(limit, slices.reduce((sum, slice) => sum + slice.tokens, 0))
   const share = Math.round((used / limit) * 100)
 
-  // Two different numbers live here. The ring is the context: what the next call
-  // will carry. The spend is what the calls already made actually cost, which is
-  // larger the moment a turn runs twice, because each one resends the context.
   const spent = usage.input + usage.output
   const rows: Slice[] = [
     ...slices.filter((slice) => slice.tokens > 0),
@@ -1643,6 +1638,51 @@ function ModelPicker({ open, onOpenChange }: { open: boolean; onOpenChange: (ope
 const markdownClass =
   'max-w-none text-sm leading-relaxed [&_a]:text-accent [&_code]:rounded [&_code]:bg-raised [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[13px] [&_h1]:mt-4 [&_h1]:text-base [&_h1]:font-semibold [&_h2]:mt-4 [&_h2]:text-sm [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:text-sm [&_h3]:font-semibold [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-[var(--radius-control)] [&_pre]:bg-raised [&_pre]:p-3 [&_pre_code]:bg-transparent [&_strong]:font-semibold [&_table]:my-2 [&_td]:border [&_td]:border-line [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-line [&_th]:px-2 [&_th]:py-1 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5'
 
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.max(ms, 0)}ms`
+  const seconds = ms / 1000
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`
+  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`
+}
+
+function textOf(node: ReactNode): string {
+  if (node === null || node === undefined || typeof node === 'boolean') return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(textOf).join('')
+  const element = node as { props?: { children?: ReactNode } }
+  return element.props ? textOf(element.props.children) : ''
+}
+
+function CodeBlock({ children }: { children?: ReactNode }) {
+  const { t } = useStore()
+  const [copied, setCopied] = useState(false)
+  const code = textOf(children).replace(/\n$/, '')
+
+  return (
+    <div className="group/code relative">
+      <pre>{children}</pre>
+      <button
+        type="button"
+        title={copied ? t('build.copied') : t('build.copy')}
+        onClick={() => {
+          void navigator.clipboard.writeText(code)
+          setCopied(true)
+          setTimeout(() => setCopied(false), 1400)
+        }}
+        className={cx(
+          'absolute right-2 top-2 flex h-7 items-center gap-1.5 rounded-[var(--radius-control)] border border-line bg-surface px-2 text-xs transition-opacity',
+          copied ? 'text-ok opacity-100' : 'text-dim opacity-0 group-hover/code:opacity-100 hover:text-text'
+        )}
+      >
+        <Icon name={copied ? 'check' : 'copy'} className="size-3.5" />
+        {copied ? t('build.copied') : t('build.copy')}
+      </button>
+    </div>
+  )
+}
+
+const markdownComponents = { pre: CodeBlock }
+
 type Block =
   | { kind: 'activity'; steps: AgentStep[] }
   | { kind: 'text'; text: string }
@@ -1683,6 +1723,7 @@ function Timeline({ message, allowed }: { message: Bubble; allowed: boolean }) {
   }
 
   const wrote = blocks.some((block) => block.kind === 'text')
+  const firstActivity = blocks.findIndex((block) => block.kind === 'activity')
 
   if (blocks.length === 0 && !legacy && !message.content) return message.streaming ? <Live /> : null
 
@@ -1696,26 +1737,44 @@ function Timeline({ message, allowed }: { message: Bubble; allowed: boolean }) {
         if (block.kind === 'text') {
           return (
             <div key={index} data-selectable className={markdownClass}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{block.text}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{block.text}</ReactMarkdown>
             </div>
           )
         }
 
         if (block.kind === 'memory') return <Saved key={index} facts={block.facts} />
         if (block.kind === 'artifact') return <Artifact key={index} step={block.step} live={live} />
-        return <ActivityBlock key={index} steps={block.steps} legacy="" live={live} />
+        return (
+          <ActivityBlock
+            key={index}
+            steps={block.steps}
+            legacy=""
+            live={live}
+            elapsed={index === firstActivity ? message.thinkMs : 0}
+          />
+        )
       })}
 
       {!wrote && message.content ? (
         <div data-selectable className={markdownClass}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{message.content}</ReactMarkdown>
         </div>
       ) : null}
     </>
   )
 }
 
-function ActivityBlock({ steps, legacy, live }: { steps: AgentStep[]; legacy: string; live: boolean }) {
+function ActivityBlock({
+  steps,
+  legacy,
+  live,
+  elapsed = 0,
+}: {
+  steps: AgentStep[]
+  legacy: string
+  live: boolean
+  elapsed?: number
+}) {
   const { t } = useStore()
   const [open, setOpen] = useState<boolean | null>(null)
 
@@ -1740,6 +1799,7 @@ function ActivityBlock({ steps, legacy, live }: { steps: AgentStep[]; legacy: st
             · {tools} {tools === 1 ? t('build.step') : t('build.steps')}
           </span>
         ) : null}
+        {!busy && elapsed > 0 ? <span className="text-xs">· {formatDuration(elapsed)}</span> : null}
         <Icon name="chevron" className={cx('ml-auto size-3.5 transition-transform', expanded && 'rotate-90')} />
       </button>
 
@@ -1747,14 +1807,14 @@ function ActivityBlock({ steps, legacy, live }: { steps: AgentStep[]; legacy: st
         <div className="space-y-2.5 border-t border-line px-3 py-3">
           {legacy ? (
             <div data-selectable className={cx(markdownClass, 'text-[13px] text-dim')}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{legacy}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{legacy}</ReactMarkdown>
             </div>
           ) : null}
 
           {steps.map((step, index) =>
             step.kind === 'thought' ? (
               <div key={index} data-selectable className={cx(markdownClass, 'text-[13px] text-dim')}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{step.text}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{step.text}</ReactMarkdown>
               </div>
             ) : (
               <div
@@ -1889,8 +1949,6 @@ function Message({
         />
       ))}
 
-
-
       {message.streaming ? null : (
         <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
           <IconButton
@@ -1903,6 +1961,11 @@ function Message({
             <IconButton size="sm" icon="refresh" title={t('build.regenerate')} onClick={onRegenerate} />
           ) : null}
           <IconButton size="sm" icon="fork" title={t('build.fork')} onClick={onFork} />
+          {message.replyMs > 0 ? (
+            <span className="ml-1 text-xs text-faint" title={t('build.elapsed')}>
+              {formatDuration(message.replyMs)}
+            </span>
+          ) : null}
           <Stamp at={message.at} />
         </div>
       )}
@@ -2137,7 +2200,7 @@ function Artifact({ step, live }: { step: AgentStep; live: boolean }) {
           {step.target ? <p className="text-xs text-faint">{step.target}</p> : null}
           {step.text ? (
             <div data-selectable className={cx(markdownClass, 'text-[13px] text-dim')}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{step.text}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{step.text}</ReactMarkdown>
             </div>
           ) : (
             <p className="text-[13px] text-faint">{t('build.working')}</p>

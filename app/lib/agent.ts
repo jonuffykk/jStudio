@@ -2,7 +2,7 @@ import { streamChat, type Endpoint, type Message, type ToolCall, type ToolDef } 
 import { callTool, type McpConnection } from '@/app/lib/mcp'
 import { action, type Action, type ProjectNode, type Skill, type SpoofOptions } from '@/app/lib/schemas'
 import { activeInstructions } from '@/app/lib/skills'
-import { readPage, searchWeb } from '@/app/lib/web'
+import { readPage, searchWeb } from '@/app/lib/net'
 
 const SOURCE_BUDGET = 40_000
 const MAX_TREE_LINES = 500
@@ -21,7 +21,7 @@ export type AgentEvent =
   | { type: 'plan'; title: string; steps: string[] }
   | { type: 'done' }
 
-export type AnimationBridge = {
+export type AssetBridge = {
   respoof: (options: Partial<SpoofOptions>) => Promise<string>
 }
 
@@ -37,6 +37,12 @@ When to reach for a tool:
 - A question, a doubt, a code review, small talk: answer in text, no tool.
 - A request that changes the game: use the tools, as many as the request needs in the same turn. A platform that deals damage is two, the Part and the Script.
 - Unsure what a script contains before editing it: call readScript instead of guessing and wiping out what is there.
+
+How long to take:
+- Spend thought in proportion to the request. A greeting, a yes or no, a name, a one line fix: answer immediately, no deliberation, no tool call, no plan.
+- Deliberate only when it changes the answer: an ambiguous ask, several scripts that have to agree, or a change that would overwrite something you have not read.
+- Do not restate the request, do not announce what you are about to do, do not summarise a proposal the person is already looking at.
+- Short and complete beats long. One paragraph is usually the whole answer.
 
 Writing Luau:
 - game:GetService for every service, at the top of the file.
@@ -55,12 +61,13 @@ The path field follows Instance:GetFullName(), dot separated, like ServerScriptS
 
 For interface, build the hierarchy with createInstance, ScreenGui then Frame then TextLabel, and use uiSize and uiPosition in UDim2 form [scaleX, offsetX, scaleY, offsetY].
 
-Animations only play when the experience owner also owns the asset. When someone reports an animation that refuses to play, or asks to make the animations theirs, respoofAnimations re-uploads every animation reference in the place under their account and swaps the IDs back in.
+An animation, a sound or a picture only works when the account behind the experience owns it. When someone reports one that refuses to play or to show, or asks to make the assets in the place theirs, respoofAssets re-uploads every reference of that kind under their account and swaps the IDs back in. Pass the kind they mean: animation, audio, image or mesh.
 
 # jStudio, the app around you
 
-Home shows the Studio connection, the account, the model and the plugin. Build is this chat. Animations re-uploads
-every animation the place references under the person's own account and keeps a run history they can apply or revert.
+Home shows the Studio connection, the account, the model and the plugin. Build is this chat. Assets re-uploads what
+the place references under the person's own account: a switch at the top picks animations, sounds, pictures or meshes, and each
+kind keeps its own run history they can apply again or revert.
 
 Settings has six tabs. Model picks the provider, the key, the model, the reasoning effort and the apply mode, where
 Manual waits for a click on every proposal, Automatic applies them as they arrive, and Plan first makes you write a
@@ -252,12 +259,17 @@ const studioTools: ToolDef[] = [
     },
   },
   {
-    name: 'respoofAnimations',
+    name: 'respoofAssets',
     description:
-      'Re-upload every animation the place references under the account signed in to jStudio, then swap the new IDs back into the place as one undoable change. Use it when animations do not play because they belong to someone else, or when the person asks to make the animations theirs.',
+      'Re-upload every asset of one kind the place references under the account signed in to jStudio, then swap the new IDs back into the place as one undoable change. Use it when animations, sounds, pictures or meshes do not work because they belong to someone else, or when the person asks to make them theirs. One kind per call.',
     parameters: {
       type: 'object',
       properties: {
+        assetKind: {
+          type: 'string',
+          enum: ['animation', 'audio', 'image', 'mesh'],
+          description: 'Which kind to re-upload. Defaults to animation.',
+        },
         selectedOnly: { type: 'boolean', description: 'Limit the scan to the current Studio selection.' },
         groupId: { type: 'string', description: 'Upload under this group instead of the user. Digits only.' },
         forceReupload: { type: 'boolean', description: 'Ignore the cache and upload everything again.' },
@@ -266,7 +278,6 @@ const studioTools: ToolDef[] = [
   },
 ]
 
-/** Every tool definition travels as JSON on every call, so the meter can weigh it. */
 export const toolDefinitionSize = (tools: { name: string; description?: string; parameters?: unknown }[]) =>
   Math.ceil(JSON.stringify(tools).length / 4)
 
@@ -274,10 +285,6 @@ export const builtinToolsSize = () => toolDefinitionSize(studioTools)
 
 const scriptClasses = new Set(['Script', 'LocalScript', 'ModuleScript'])
 
-/**
- * Reading the same script twice is waste, but these answer about the moment they are called, so the
- * same arguments are a different question each time and the answer is never reused.
- */
 const volatileTool =
   /console|capture|screenshot|screen|state|play|run|execute|eval|job|input|keyboard|mouse|navigat/i
 
@@ -285,7 +292,7 @@ const mutating = new Set([
   'writeScript',
   'createInstance',
   'deleteInstance',
-  'respoofAnimations',
+  'respoofAssets',
   'askQuestion',
   'proposePlan',
   'delegate',
@@ -374,12 +381,12 @@ function buildSystemPrompt(input: {
           'Call delegate with the exact name. Their answer is a colleague note: use what is right, drop what is wrong, and never repeat it back word for word.',
         ].join('\n\n')
       : '',
-    skills ? `# Rules this person turned on\n${skills}` : '',
+    skills ? `# Rules they invoked for this message\n${skills}` : '',
     input.offered.length > 0
       ? [
           '# Rules they can bring in',
           input.offered.map((entry) => `- /${entry.name}: ${entry.description}`).join('\n'),
-          'They are not loaded. If one would settle a question, name it and let them type the slash name.',
+          'These are available but not loaded, so do not assume their content. If one would settle a question, name it and let them type the slash name.',
         ].join('\n')
       : '',
     `# Current state of the game\n${describeProject(input.nodes, input.truncated)}`,
@@ -392,10 +399,6 @@ type Draft = { id: string; name: string; args: string }
 
 const silent = new Set(['askQuestion', 'proposePlan', 'remember', 'delegate'])
 
-/**
- * What the person sees while a call is in flight. Every tool announces itself before it runs, so a
- * slow one reads as work in progress rather than as the answer having stopped.
- */
 function describe(call: ToolCall, connections: McpConnection[]): ToolNote | null {
   if (silent.has(call.name)) return null
 
@@ -436,7 +439,7 @@ export async function* runAgent(input: {
   agents: AgentRole[]
   delegate: (agent: AgentRole, task: string) => Promise<string>
   mcp: McpConnection[]
-  animations: AnimationBridge
+  assets: AssetBridge
   canEditPlace: boolean
   maxTurns: number
   signal: AbortSignal
@@ -522,8 +525,6 @@ export async function* runAgent(input: {
 
     for (const call of calls) {
       const key = `${call.name}:${call.args}`
-      // Reading the same thing again, in this turn or three turns ago, returns what is already in
-      // the conversation. Hand it back without spending the call.
       const reusable = !mutating.has(call.name) && !volatileTool.test(call.name)
       const cached = reusable ? answered.get(key) : undefined
 
@@ -554,8 +555,6 @@ export async function* runAgent(input: {
       break
     }
 
-    // A turn where every call had already been answered moved nothing forward. One nudge, then the
-    // loop is cut rather than left circling on the person's time and money.
     idle = worked ? 0 : idle + 1
     if (idle === 1) {
       conversation.push({
@@ -596,7 +595,7 @@ async function executeTool(
   input: {
     nodes: ProjectNode[]
     mcp: McpConnection[]
-    animations: AnimationBridge
+    assets: AssetBridge
     agents: AgentRole[]
     delegate: (agent: AgentRole, task: string) => Promise<string>
     canEditPlace: boolean
@@ -719,13 +718,20 @@ async function executeTool(
     return { output: `Saved ${facts.length}.`, event: { type: 'remember', facts } }
   }
 
-  if (call.name === 'respoofAnimations') {
-    const options = {
-      selectedOnly: args.selectedOnly === true,
-      forceReupload: args.forceReupload === true,
-      groupId: typeof args.groupId === 'string' ? args.groupId : '',
+  if (call.name === 'respoofAssets') {
+    const assetKind =
+      args.assetKind === 'audio' || args.assetKind === 'image' || args.assetKind === 'mesh'
+        ? args.assetKind
+        : 'animation'
+
+    return {
+      output: await input.assets.respoof({
+        assetKind,
+        selectedOnly: args.selectedOnly === true,
+        forceReupload: args.forceReupload === true,
+        groupId: typeof args.groupId === 'string' ? args.groupId : '',
+      }),
     }
-    return { output: await input.animations.respoof(options) }
   }
 
   const kind =

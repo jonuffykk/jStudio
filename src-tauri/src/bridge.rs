@@ -53,6 +53,12 @@ pub struct ScanRequest {
     pub selectedOnly: bool,
     #[serde(default)]
     pub useInstanceNames: bool,
+    #[serde(default = "animationKind")]
+    pub assetKind: String,
+}
+
+fn animationKind() -> String {
+    "animation".to_owned()
 }
 
 #[derive(Clone, Serialize)]
@@ -60,6 +66,7 @@ pub struct ScanRequest {
 struct MappingPush {
     token: String,
     lines: Vec<String>,
+    assetKind: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -84,6 +91,9 @@ struct Inner {
     queue: VecDeque<Job>,
     results: HashMap<String, JobResult>,
     resultOrder: VecDeque<String>,
+    studioUserId: Option<String>,
+    creatorId: Option<String>,
+    creatorType: Option<String>,
     pendingScan: Option<ScanRequest>,
     pendingMappings: Option<MappingPush>,
 }
@@ -154,6 +164,9 @@ impl Bridge {
             "port": *self.port.lock().unwrap(),
             "placeId": inner.placeId,
             "placeName": inner.placeName,
+            "studioUserId": inner.studioUserId,
+            "creatorId": inner.creatorId,
+            "creatorType": inner.creatorType,
             "pluginVersion": inner.pluginVersion,
             "selectionCount": inner.selectionCount,
             "lastSeenAt": inner.lastSeenAt,
@@ -170,6 +183,14 @@ impl Bridge {
             "truncated": inner.truncated,
             "syncedAt": inner.syncedAt,
         })
+    }
+
+    pub fn openPlaceId(&self) -> Option<String> {
+        self.inner.lock().unwrap().placeId.clone()
+    }
+
+    pub fn studioUserId(&self) -> Option<String> {
+        self.inner.lock().unwrap().studioUserId.clone()
     }
 
     pub fn isOnline(&self) -> bool {
@@ -214,11 +235,15 @@ impl Bridge {
         self.emit("spoof:scan", payload);
     }
 
-    pub fn pushMappings(&self, lines: Vec<String>, token: String) {
+    pub fn pushMappings(&self, lines: Vec<String>, token: String, assetKind: String) {
         self.inner.lock().unwrap().pendingMappings = if lines.is_empty() {
             None
         } else {
-            Some(MappingPush { token, lines })
+            Some(MappingPush {
+                token,
+                lines,
+                assetKind,
+            })
         };
         self.work.notify_waiters();
     }
@@ -270,6 +295,12 @@ struct Hello {
     placeName: Option<String>,
     #[serde(default)]
     pluginVersion: Option<String>,
+    #[serde(default)]
+    studioUserId: Option<String>,
+    #[serde(default)]
+    creatorId: Option<String>,
+    #[serde(default)]
+    creatorType: Option<String>,
 }
 
 async fn hello(
@@ -283,6 +314,9 @@ async fn hello(
         inner.placeId = body.placeId;
         inner.placeName = body.placeName;
         inner.pluginVersion = body.pluginVersion;
+        inner.studioUserId = body.studioUserId.filter(|id| id != "0");
+        inner.creatorId = body.creatorId.filter(|id| id != "0");
+        inner.creatorType = body.creatorType;
         inner.lastSeenAt = Some(nowMs());
     }
     bridge.emit("studio:status", bridge.status());
@@ -478,6 +512,7 @@ mod tests {
         bridge.requestScan(ScanRequest {
             selectedOnly: true,
             useInstanceNames: true,
+            assetKind: "animation".into(),
         });
         let work = bridge.takeWork().expect("scan should be pending");
         assert_eq!(work["scan"]["selectedOnly"], true);

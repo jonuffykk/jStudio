@@ -68,6 +68,9 @@ export const bridgeStatus = z.object({
   online: z.boolean().default(false),
   port: z.number().default(0),
   placeId: z.string().nullable().default(null),
+  studioUserId: z.string().nullable().default(null),
+  creatorId: z.string().nullable().default(null),
+  creatorType: z.string().nullable().default(null),
   placeName: z.string().nullable().default(null),
   pluginVersion: z.string().nullable().default(null),
   selectionCount: z.number().default(0),
@@ -140,8 +143,10 @@ export const spoofOptions = z.object({
   downloadConcurrency: z.number().int().min(1).max(25).default(10),
   uploadConcurrency: z.number().int().min(1).max(25).default(10),
   only: z.array(z.string()).default([]),
+  assetKind: z.enum(['animation', 'audio', 'image', 'mesh']).default('animation'),
 })
 export type SpoofOptions = z.infer<typeof spoofOptions>
+export type AssetKind = SpoofOptions['assetKind']
 
 export const memoryItem = z.object({
   id: z.string(),
@@ -254,6 +259,8 @@ export const runItem = z.object({
   status: z.string().default(''),
   newId: z.string().default(''),
   reason: z.string().default(''),
+  detail: z.string().default(''),
+  free: z.boolean().default(false),
   at: z.number().default(0),
 })
 export type RunItem = z.infer<typeof runItem>
@@ -264,6 +271,7 @@ export const runRecord = z.object({
   finishedAt: z.number(),
   stopped: z.boolean().default(false),
   downloadOnly: z.boolean().default(false),
+  assetKind: z.enum(['animation', 'audio', 'image', 'mesh']).default('animation'),
   target: z.string().nullable().default(null),
   done: z.number().default(0),
   failed: z.number().default(0),
@@ -311,6 +319,8 @@ export const chatMessage = z.object({
     .default([]),
   resolved: z.boolean().default(false),
   folded: z.boolean().default(false),
+  thinkMs: z.number().default(0),
+  replyMs: z.number().default(0),
   plan: z.object({ title: z.string(), steps: z.array(z.string()).default([]) }).nullable().default(null),
   memories: z.array(z.string()).default([]),
 })

@@ -65,6 +65,8 @@ jobs:
       prerelease: ${{ steps.check.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - id: check
         shell: bash
         env:
@@ -79,13 +81,14 @@ jobs:
           PLUGIN=$(sed -n 's/^local PLUGIN_VERSION = "\(.*\)"/\1/p' plugin/jStudio.server.lua | head -1)
 
           if [ "$VERSION" != "$CONF" ] || [ "$VERSION" != "$CARGO" ] || [ "$VERSION" != "$PLUGIN" ]; then
-            echo "::error::Version mismatch. package.json=$VERSION tauri.conf.json=$CONF Cargo.toml=$CARGO plugin=$PLUGIN"
+            echo "::error::The four version numbers must agree before anything is released. package.json=$VERSION tauri.conf.json=$CONF Cargo.toml=$CARGO plugin/jStudio.server.lua=$PLUGIN"
             exit 1
           fi
 
           if [ -z "${SIGNING_KEY:-}" ]; then
-            echo "::error::TAURI_SIGNING_PRIVATE_KEY is missing. createUpdaterArtifacts is on, so every build job would fail signing. Add the secret and push again."
-            exit 1
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY is missing, so the signed installers cannot be built. Add the secret to publish a release."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           TAG="v$VERSION"
@@ -109,8 +112,14 @@ jobs:
           ' CHANGELOG.md)
 
           if [ -z "$(echo "$NOTES" | tr -d '[:space:]')" ]; then
-            echo "::error::CHANGELOG.md has no '## [$VERSION]' section. Add one before releasing."
-            exit 1
+            echo "::warning::CHANGELOG.md has no '## [$VERSION]' section, so the notes are taken from the commits instead."
+            PREVIOUS=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo "")
+            if [ -n "$PREVIOUS" ]; then
+              NOTES=$(git log --no-merges --pretty='- %s' "$PREVIOUS..HEAD" | head -30)
+            else
+              NOTES=$(git log --no-merges --pretty='- %s' -n 30)
+            fi
+            [ -n "$(echo "$NOTES" | tr -d '[:space:]')" ] || NOTES="- Maintenance release."
           fi
 
           case "$VERSION" in

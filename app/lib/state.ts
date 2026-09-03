@@ -17,13 +17,14 @@ import { translate, type Language, type MessageKey } from '@/app/lib/i18n'
 import { mergeSkills } from '@/app/lib/skills'
 import { findProvider } from '@/app/lib/providers'
 import { listModels, resolveEndpoint } from '@/app/lib/llm'
-import { checkUpdate } from '@/app/lib/updates'
+import { checkUpdate } from '@/app/lib/host'
 import {
   bridgeStatus as bridgeStatusSchema,
   defaultAgents,
   pluginStatus as pluginStatusSchema,
   settings as settingsSchema,
   type Account,
+  type AssetKind,
   type AgentProfile,
   type BridgeStatus,
   type Conversation,
@@ -33,7 +34,7 @@ import {
   type Settings,
 } from '@/app/lib/schemas'
 
-export type View = 'home' | 'build' | 'spoof'
+export type View = 'home' | 'build' | 'assets'
 export type Stop = { view: View; chat?: string }
 
 export type Modal = 'none' | 'accounts' | 'settings'
@@ -57,6 +58,8 @@ export type SpoofItem = {
   status: SpoofStatus
   newId?: string
   reason?: string
+  detail?: string
+  free?: boolean
   at: number
 }
 
@@ -86,6 +89,7 @@ type Store = {
   toasts: Toast[]
   spoofRunning: boolean
   spoofPaused: boolean
+  spoofKind: AssetKind
   spoofStatus: string
   spoofProgress: { total: number; done: number; failed: number }
   spoofItems: SpoofItem[]
@@ -164,12 +168,9 @@ function paintTheme(theme: Settings['theme']): void {
   const root = document.documentElement
   root.dataset.theme = tone
   root.style.background = tone === 'light' ? '#f6f6f8' : '#0b0b0f'
-  // The boot script reads the stored choice before React exists, so it is saved
-  // as written, not as resolved: following the system means following it later too.
   localStorage.setItem('jstudio.theme', JSON.stringify(theme))
 }
 
-/** Windows reports its display language here; jStudio speaks three of them. */
 export function systemLanguage(): Language {
   const tag = (navigator.languages?.[0] ?? navigator.language ?? 'en').toLowerCase()
   if (tag.startsWith('pt')) return 'pt'
@@ -216,6 +217,7 @@ export const useStore = create<Store>((set, get) => ({
   toasts: [],
   spoofRunning: false,
   spoofPaused: false,
+  spoofKind: 'animation',
   spoofStatus: '',
   spoofProgress: { total: 0, done: 0, failed: 0 },
   spoofItems: [],
@@ -237,11 +239,6 @@ export const useStore = create<Store>((set, get) => ({
 
   cloudReady: () => !!get().activeAccount()?.hasApiKey,
 
-  /**
-   * What is still unconfigured, for the setup screen to point at. Nothing here
-   * gates the app: each half of jStudio asks only for what that half needs, so
-   * someone who came for the animations never has to hand over a model key.
-   */
   blockers: () => {
     const missing: MessageKey[] = []
     const wants = get().settings.intent
@@ -262,7 +259,7 @@ export const useStore = create<Store>((set, get) => ({
 
   setModal: (modal) => set({ modal, paletteOpen: false }),
   openRun: (focusRun) =>
-    set(focusRun ? { focusRun, view: 'spoof', modal: 'none' } : { focusRun: null }),
+    set(focusRun ? { focusRun, view: 'assets', modal: 'none' } : { focusRun: null }),
 
   setView: (view) =>
     set((state) => {
@@ -414,7 +411,6 @@ export const useStore = create<Store>((set, get) => ({
     const clean = text.trim().slice(0, 400)
     if (!clean || settings.memory.items.some((entry) => entry.text === clean)) return
 
-
     void get().patchSettings({
       memory: {
         ...settings.memory,
@@ -487,12 +483,10 @@ export const useStore = create<Store>((set, get) => ({
     }
     paintTheme(settings.theme)
 
-    // Until someone picks a language themselves, jStudio follows Windows.
     if (!settings.languagePicked) settings.language = systemLanguage()
 
     set({ settings, apiKey: await secrets.get(`apiKey.${settings.providerId}`) })
 
-    // Following the system means noticing when the system changes its mind.
     window
       .matchMedia('(prefers-color-scheme: dark)')
       .addEventListener('change', () => {
@@ -512,9 +506,6 @@ export const useStore = create<Store>((set, get) => ({
       if (fallback) await get().patchSettings({ model: fallback })
     }
 
-    // Someone who already set jStudio up before the setup screen learned to ask
-    // what they came for should never be sent back through it. What they have
-    // configured says what they use it for.
     if (!settings.onboarded && (get().aiReady() || get().robloxReady())) {
       await get().patchSettings({
         onboarded: true,
@@ -551,7 +542,7 @@ export const useStore = create<Store>((set, get) => ({
         if (index === -1) return { spoofItems: [...state.spoofItems, item] }
 
         const next = [...state.spoofItems]
-        next[index] = { ...next[index], ...item }
+        next[index] = item
         return { spoofItems: next }
       })
     )
