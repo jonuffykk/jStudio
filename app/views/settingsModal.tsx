@@ -1,10 +1,21 @@
 'use client'
 
 import { useEffect, useState, type ReactNode } from 'react'
-import { accounts as accountsApi, history as historyApi, isDesktop, mcpHost, openExternal, secrets } from '@/app/lib/ipc'
-import { groupModels, isFreeModel } from '@/app/lib/llm'
-import { findProvider, pickDefaultModel, providers } from '@/app/lib/providers'
-import { builtinCatalog, importCatalog } from '@/app/lib/net'
+import {
+  accounts as accountsApi,
+  conversations as conversationsApi,
+  history as historyApi,
+  isDesktop,
+  mcpHost,
+  openExternal,
+  secrets,
+} from '@/app/lib/ipc'
+import { findProvider, providers } from '@/app/lib/providers'
+import { formatCost } from '@/app/lib/models'
+import { ModelSelect } from '@/app/ui/modelSelect'
+import { UsageBars, UsageSplit, useDayFormat } from '@/app/ui/usageChart'
+import { compactTokens, totalsOver } from '@/app/lib/usage'
+import { builtinServers } from '@/app/lib/mcp'
 import { languageLabels, type Language, type MessageKey } from '@/app/lib/i18n'
 import { slugify } from '@/app/lib/skills'
 import { systemLanguage, useStore } from '@/app/lib/state'
@@ -12,8 +23,6 @@ import {
   mcpServer,
   settings as settingsSchema,
   skill as skillSchema,
-  type AgentProfile,
-  type CatalogEntry,
   type McpServer,
   type Skill,
 } from '@/app/lib/schemas'
@@ -28,13 +37,12 @@ import {
   Modal,
   Segmented,
   Select,
-  Spinner,
   Textarea,
   Toggle,
   cx,
 } from '@/app/ui/primitives'
 
-type Tab = 'model' | 'extensions' | 'memory' | 'agents' | 'usage' | 'app'
+type Tab = 'model' | 'extensions' | 'memory' | 'usage' | 'app'
 
 export function SettingsModal() {
   const store = useStore()
@@ -79,7 +87,6 @@ export function SettingsModal() {
               { value: 'model', label: t('settings.tabModel') },
               { value: 'extensions', label: t('settings.tabExtensions') },
               { value: 'memory', label: t('settings.tabMemory') },
-              { value: 'agents', label: t('settings.tabAgents') },
               { value: 'usage', label: t('settings.tabUsage') },
               { value: 'app', label: t('settings.tabApp') },
             ]}
@@ -90,8 +97,7 @@ export function SettingsModal() {
             <ExtensionsTab onEditServer={setEditingServer} onEditSkill={setEditingSkill} />
           ) : null}
           {tab === 'memory' ? <MemoryTab onExpand={() => setMemoryOpen(true)} /> : null}
-          {tab === 'agents' ? <AgentsTab /> : null}
-          {tab === 'usage' ? <UsageTab /> : null}
+            {tab === 'usage' ? <UsageTab /> : null}
           {tab === 'app' ? <AppTab /> : null}
         </div>
       )}
@@ -143,31 +149,8 @@ function Line({
 
 function ModelTab() {
   const store = useStore()
-  const { settings, apiKey, models, t } = store
+  const { settings, apiKey, t } = store
   const provider = findProvider(settings.providerId)
-
-  const [loading, setLoading] = useState(false)
-  const list = models[settings.providerId] ?? []
-
-  useEffect(() => {
-    let live = true
-    store
-      .loadModels()
-      .then((loaded) => {
-        if (!live) return
-        if (loaded.length > 0 && !loaded.includes(settings.model)) {
-          void store.patchSettings({ model: pickDefaultModel(loaded) })
-        }
-      })
-      .catch(() => {})
-
-    return () => {
-      live = false
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.providerId, apiKey])
-
-  const groups = groupModels(list.length > 0 ? list : settings.model ? [settings.model] : [])
 
   return (
     <div className="space-y-5">
@@ -208,46 +191,14 @@ function ModelTab() {
           ) : null}
 
           <Line label={t('settings.model')} stacked>
-            <div className="flex gap-2">
-              <select
-                value={settings.model}
-                onChange={(event) => void store.patchSettings({ model: event.target.value })}
-                className="w-full appearance-none rounded-[var(--radius-control)] border border-line bg-bg px-3 py-2 pr-8 text-sm text-text outline-none transition-colors focus:border-focus"
-              >
-                {groups.map((group) => (
-                  <optgroup key={group.label} label={group.label}>
-                    {group.models.map((model) => (
-                      <option key={model} value={model}>
-                        {model}
-                        {isFreeModel(model) ? ` · ${t('settings.free')}` : ''}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
-
-              {loading ? (
-                <span className="flex size-8 items-center justify-center">
-                  <Spinner />
-                </span>
-              ) : (
-                <IconButton
-                  icon="refresh"
-                  title={t('settings.refresh')}
-                  onClick={() => {
-                    setLoading(true)
-                    void store.loadModels(true).finally(() => setLoading(false))
-                  }}
-                />
-              )}
-            </div>
+            <ModelSelect value={settings.model} onChange={(model) => void store.patchSettings({ model })} />
           </Line>
         </Card>
       </Section>
 
       <Section title={t('settings.behaviour')}>
         <Card>
-          <Line label={t('settings.mode')} hint={t('settings.modeHint')}>
+          <Line label={t('settings.mode')}>
             <Segmented
               value={settings.mode}
               onChange={(mode) => void store.patchSettings({ mode })}
@@ -258,6 +209,32 @@ function ModelTab() {
               ]}
             />
           </Line>
+
+          <Line label={t('settings.approval')}>
+            <Segmented
+              value={settings.approval}
+              onChange={(approval) => void store.patchSettings({ approval })}
+              options={[
+                { value: 'ask', label: t('settings.approvalAsk') },
+                { value: 'auto', label: t('settings.approvalAuto') },
+              ]}
+            />
+          </Line>
+
+          {settings.allowedTools.length > 0 ? (
+            <Line label={t('settings.allowedTools')}>
+              <div className="flex items-center gap-2">
+                <Badge>{settings.allowedTools.length}</Badge>
+                <Button
+                  size="sm"
+                  tone="ghost"
+                  onClick={() => void store.patchSettings({ allowedTools: [] })}
+                >
+                  {t('settings.clearAllowed')}
+                </Button>
+              </div>
+            </Line>
+          ) : null}
 
           <Line label={t('settings.effort')}>
             <Segmented
@@ -271,24 +248,12 @@ function ModelTab() {
             />
           </Line>
 
-          <Line label={t('settings.temperature')}>
-            <div className="w-24">
-              <Input
-                type="number"
-                value={String(settings.temperature)}
-                onChange={(value) => void store.patchSettings({ temperature: Number(value) || 0 })}
-              />
-            </div>
-          </Line>
-
-          <Line label={t('settings.maxTurns')}>
-            <div className="w-24">
-              <Input
-                type="number"
-                value={String(settings.maxTurns)}
-                onChange={(value) => void store.patchSettings({ maxTurns: Number(value) || 8 })}
-              />
-            </div>
+          <Line label={t('settings.subagents')}>
+            <Toggle
+              checked={settings.subagents}
+              onChange={(subagents) => void store.patchSettings({ subagents })}
+              label=""
+            />
           </Line>
 
         </Card>
@@ -308,9 +273,6 @@ function ExtensionsTab({
   const { settings, mcp, mcpBusy, t } = store
 
   const [studioAvailable, setStudioAvailable] = useState<boolean | null>(null)
-  const [manifestUrl, setManifestUrl] = useState('')
-  const [library, setLibrary] = useState<CatalogEntry[]>(builtinCatalog)
-  const [importing, setImporting] = useState(false)
 
   useEffect(() => {
     if (!isDesktop()) return
@@ -328,40 +290,7 @@ function ExtensionsTab({
     return { tone: 'ok' as const, label: `${connection.tools.length} ${t('settings.tools')}` }
   }
 
-  const addEntry = async (entry: CatalogEntry) => {
-    if (entry.kind === 'skill') {
-      if (settings.skills.some((item) => item.id === entry.id)) return
-      await store.patchSettings({
-        skills: [
-          ...settings.skills,
-          skillSchema.parse({
-            id: entry.id,
-            name: slugify(entry.name),
-            description: entry.description,
-            instructions: entry.instructions,
-          }),
-        ],
-      })
-      return
-    }
-
-    if (settings.mcpServers.some((server) => server.id === entry.id)) return
-    const server = mcpServer.parse({
-      id: entry.id,
-      label: entry.name,
-      transport: entry.transport,
-      command: entry.command,
-      args: entry.args,
-      url: entry.url,
-    })
-    await store.patchSettings({ mcpServers: [...settings.mcpServers, server] })
-    await store.connectServer(server)
-  }
-
-  const installed = (entry: CatalogEntry) =>
-    entry.kind === 'skill'
-      ? settings.skills.some((item) => item.id === entry.id)
-      : settings.mcpServers.some((server) => server.id === entry.id)
+  const errorOf = (id: string) => mcp.find((entry) => entry.server.id === id)?.error ?? null
 
   return (
     <div className="space-y-5">
@@ -392,13 +321,24 @@ function ExtensionsTab({
         }
       >
         <Card>
-          <ServerRow
-            icon="film"
-            name={t('settings.studioMcp')}
-            detail={studioAvailable === false ? t('settings.studioMcpMissing') : t('settings.studioMcpHint')}
-            state={statusOf('robloxStudio')}
-            actions={null}
-          />
+          {builtinServers.map((server) => (
+            <ServerRow
+              key={server.id}
+              icon={server.id === 'robloxStudio' ? 'film' : 'book'}
+              name={server.id === 'robloxStudio' ? t('settings.studioMcp') : server.label}
+              detail={
+                server.id === 'robloxStudio'
+                  ? studioAvailable === false
+                    ? t('settings.studioMcpMissing')
+                    : t('settings.studioMcpHint')
+                  : server.url
+              }
+              mono={server.id !== 'robloxStudio'}
+              state={statusOf(server.id)}
+              error={errorOf(server.id)}
+              actions={null}
+            />
+          ))}
 
           {settings.mcpServers.map((server) => (
             <ServerRow
@@ -408,6 +348,7 @@ function ExtensionsTab({
               detail={server.transport === 'http' ? server.url : `${server.command} ${server.args.join(' ')}`}
               mono
               state={statusOf(server.id)}
+              error={errorOf(server.id)}
               actions={
                 <>
                   <IconButton icon="edit" title={t('common.open')} onClick={() => onEditServer(server)} />
@@ -484,55 +425,6 @@ function ExtensionsTab({
         </Card>
       </Section>
 
-      <Section title={t('settings.library')}>
-        <div className="flex gap-2">
-          <Input value={manifestUrl} onChange={setManifestUrl} placeholder={t('settings.importUrl')} mono />
-          <Button
-            size="sm"
-            disabled={!manifestUrl.trim() || importing}
-            onClick={async () => {
-              setImporting(true)
-              try {
-                const entries = await importCatalog(manifestUrl.trim())
-                setLibrary([...builtinCatalog, ...entries])
-                setManifestUrl('')
-              } catch (error) {
-                store.toast(error instanceof Error ? error.message : String(error), 'danger')
-              } finally {
-                setImporting(false)
-              }
-            }}
-          >
-            {importing ? <Spinner /> : t('settings.import')}
-          </Button>
-        </div>
-
-        <Card>
-          {library.map((entry) => (
-            <div key={entry.id} className="flex items-center gap-3 px-3 py-2.5">
-              <Icon name={entry.kind === 'skill' ? 'spark' : 'plugin'} className="size-4 shrink-0 text-faint" />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-[13px] font-medium">{entry.name}</p>
-                <p className="truncate text-xs text-faint">{entry.description}</p>
-              </div>
-              {entry.homepage ? (
-                <IconButton
-                  icon="external"
-                  title={entry.homepage}
-                  onClick={() => void openExternal(entry.homepage)}
-                />
-              ) : null}
-              {installed(entry) ? (
-                <Badge tone="ok">{t('settings.added')}</Badge>
-              ) : (
-                <Button size="sm" onClick={() => void addEntry(entry)}>
-                  {t('settings.add')}
-                </Button>
-              )}
-            </div>
-          ))}
-        </Card>
-      </Section>
     </div>
   )
 }
@@ -543,6 +435,7 @@ function ServerRow({
   detail,
   mono,
   state,
+  error,
   actions,
 }: {
   icon: string
@@ -550,31 +443,85 @@ function ServerRow({
   detail: string
   mono?: boolean
   state: { tone: 'ok' | 'danger' | 'neutral'; label: string }
+  error?: string | null
   actions: ReactNode
 }) {
   return (
-    <div className="flex items-center gap-3 px-3 py-2.5">
-      <span className="flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-control)] bg-raised">
-        <Icon name={icon} className="size-4 text-accent" />
-      </span>
+    <div className="px-3 py-2.5">
+      <div className="flex items-center gap-3">
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-control)] bg-raised">
+          <Icon name={icon} className="size-4 text-accent" />
+        </span>
 
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-[13px] font-medium">{name}</p>
-        <p className={cx('truncate text-xs text-faint', mono && 'font-mono')}>{detail}</p>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[13px] font-medium">{name}</p>
+          <p className={cx('truncate text-xs text-faint', mono && 'font-mono')}>{detail}</p>
+        </div>
+
+        <Badge tone={state.tone}>{state.label}</Badge>
+        <div className="flex shrink-0 items-center gap-1">{actions}</div>
       </div>
 
-      <Badge tone={state.tone}>{state.label}</Badge>
-      <div className="flex shrink-0 items-center gap-1">{actions}</div>
+      {error ? <p className="mt-1.5 text-xs text-danger">{error}</p> : null}
     </div>
   )
 }
 
+const roles = ['none', 'solo', 'studio', 'scripter', 'artist', 'builder', 'learning'] as const
+
 function MemoryTab({ onExpand }: { onExpand: () => void }) {
   const store = useStore()
   const { settings, t } = store
+  const account = store.activeAccount()
+
+  const patchProfile = (patch: Partial<typeof settings.profile>) =>
+    void store.patchSettings({ profile: { ...settings.profile, ...patch } })
 
   return (
     <div className="space-y-5">
+      <Section title={t('settings.profile')}>
+        <Card>
+          <Line label={t('settings.avatar')}>
+            <span className="flex size-9 items-center justify-center overflow-hidden rounded-full bg-raised text-xs font-medium text-dim">
+              {account?.avatarUrl ? (
+                <img src={account.avatarUrl} alt="" className="size-full object-cover" />
+              ) : (
+                (account?.name ?? '?').slice(0, 2).toUpperCase()
+              )}
+            </span>
+          </Line>
+
+          <Line label={t('settings.robloxName')}>
+            <span className="text-[13px] text-dim">
+              {account ? `${account.name} · @${account.username}` : t('settings.noAccount')}
+            </span>
+          </Line>
+
+          <Line label={t('settings.nickname')}>
+            <div className="w-56">
+              <Input
+                value={settings.profile.nickname}
+                placeholder={account?.name ?? ''}
+                onChange={(nickname) => patchProfile({ nickname })}
+              />
+            </div>
+          </Line>
+
+          <Line label={t('settings.role')}>
+            <div className="w-56">
+              <Select
+                value={settings.profile.role}
+                onChange={(role) => patchProfile({ role })}
+                options={roles.map((value) => ({
+                  value,
+                  label: t(`settings.role_${value}` as MessageKey),
+                }))}
+              />
+            </div>
+          </Line>
+        </Card>
+      </Section>
+
       <Section title={t('settings.customInstructions')}>
         <Textarea
           rows={6}
@@ -585,7 +532,7 @@ function MemoryTab({ onExpand }: { onExpand: () => void }) {
 
       <Section title={t('settings.tabMemory')}>
         <Card>
-          <Line label={t('settings.memoryOn')} hint={t('settings.memoryHint')}>
+          <Line label={t('settings.memoryOn')}>
             <Toggle
               checked={settings.memory.enabled}
               onChange={(enabled) => void store.patchSettings({ memory: { ...settings.memory, enabled } })}
@@ -593,7 +540,7 @@ function MemoryTab({ onExpand }: { onExpand: () => void }) {
             />
           </Line>
 
-          <Line label={t('settings.useChatHistory')} hint={t('settings.useChatHistoryHint')}>
+          <Line label={t('settings.useChatHistory')}>
             <Toggle
               checked={settings.useChatHistory}
               onChange={(useChatHistory) => void store.patchSettings({ useChatHistory })}
@@ -635,249 +582,101 @@ function MemoryList({ onBack }: { onBack: () => void }) {
         {t('settings.tabMemory')}
       </button>
 
-      <p className="text-[13px] text-dim">{t('settings.expandMemoryHint')}</p>
-
-      <div className="flex max-h-[52vh] flex-wrap content-start gap-1.5 overflow-y-auto rounded-[var(--radius-panel)] border border-line bg-bg p-2.5">
+      <div className="overflow-hidden rounded-[var(--radius-panel)] border border-line bg-bg">
         {settings.memory.items.length === 0 ? (
-          <p className="px-1 py-4 text-center text-[13px] text-faint">{t('settings.memoryEmpty')}</p>
+          <p className="px-3 py-6 text-center text-[13px] text-faint">{t('settings.memoryEmpty')}</p>
         ) : (
-          settings.memory.items.map((memory) => (
-            <span
-              key={memory.id}
-              className="group flex max-w-full items-baseline gap-1.5 rounded-[var(--radius-control)] bg-accent-soft py-1 pl-2.5 pr-1.5 text-[13px]"
-            >
-              <span data-selectable className="min-w-0">
-                {memory.text}
-              </span>
-              <button
-                type="button"
-                title={t('common.delete')}
-                onClick={() => forget(memory.id)}
-                className="shrink-0 text-faint opacity-0 transition-opacity hover:text-danger group-hover:opacity-100"
-              >
-                <Icon name="close" className="size-3" />
-              </button>
-            </span>
-          ))
+          <ul className="divide-y divide-line">
+            {settings.memory.items.map((memory) => (
+              <li key={memory.id} className="group flex items-start gap-2 px-3 py-2">
+                <Icon name="memory" className="mt-0.5 size-3.5 shrink-0 text-accent" />
+                <span data-selectable className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[13px]">
+                  {memory.text}
+                </span>
+                <button
+                  type="button"
+                  title={t('common.delete')}
+                  onClick={() => forget(memory.id)}
+                  className="mt-0.5 shrink-0 text-faint opacity-0 transition-opacity hover:text-danger focus-visible:opacity-100 group-hover:opacity-100"
+                >
+                  <Icon name="close" className="size-3" />
+                </button>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
     </div>
   )
 }
 
-function AgentsTab() {
-  const store = useStore()
-  const { settings, models, t } = store
-  const [open, setOpen] = useState<string | null>(null)
-
-  const list = models[settings.providerId] ?? []
-  const active = settings.agents.filter((agent) => agent.enabled).length
-
-  const update = (id: string, patch: Partial<AgentProfile>) =>
-    void store.patchSettings({
-      agents: settings.agents.map((agent) => (agent.id === id ? { ...agent, ...patch } : agent)),
-    })
-
-  return (
-    <Section
-      title={t('settings.tabAgents')}
-      action={<Badge tone={active > 0 ? 'accent' : 'neutral'}>{t('settings.agentsOn', { count: active })}</Badge>}
-    >
-      <p className="text-[13px] text-dim">{t('settings.agentHint')}</p>
-
-      <Card>
-        {settings.agents.map((agent) => (
-          <div key={agent.id}>
-            <div className="flex items-center gap-3 px-3 py-2.5">
-              <span className="flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-control)] bg-raised">
-                <Icon name="agent" className="size-4 text-accent" />
-              </span>
-
-              <button
-                type="button"
-                onClick={() => setOpen(open === agent.id ? null : agent.id)}
-                className="min-w-0 flex-1 text-left"
-              >
-                <span className="block truncate text-[13px] font-medium">{agent.name}</span>
-                <span className="block truncate text-xs text-faint">{agent.model || t('settings.inherit')}</span>
-              </button>
-
-              <IconButton
-                icon="chevron"
-                title={t('settings.agentRole')}
-                onClick={() => setOpen(open === agent.id ? null : agent.id)}
-              />
-              <Toggle
-                checked={agent.enabled}
-                onChange={(enabled) => {
-                  if (enabled && active >= 3) {
-                    store.toast(t('settings.agentHint'), 'danger')
-                    return
-                  }
-                  update(agent.id, { enabled })
-                }}
-                label=""
-              />
-            </div>
-
-            {open === agent.id ? (
-              <div className="space-y-3 border-t border-line px-3 py-3">
-                <Field label={t('settings.agentModel')}>
-                  <Select
-                    value={agent.model}
-                    onChange={(model) => update(agent.id, { model })}
-                    options={[
-                      { value: '', label: t('settings.inherit') },
-                      ...(list.length > 0 ? list : [settings.model]).map((model) => ({
-                        value: model,
-                        label: model,
-                      })),
-                    ]}
-                  />
-                </Field>
-                <Field label={t('settings.agentRole')}>
-                  <Textarea
-                    rows={4}
-                    value={agent.instructions}
-                    onChange={(instructions) => update(agent.id, { instructions })}
-                  />
-                </Field>
-              </div>
-            ) : null}
-          </div>
-        ))}
-      </Card>
-    </Section>
-  )
-}
-
 function UsageTab() {
-  const { settings, conversations, t } = useStore()
-  const log = settings.usageLog
-
-  const byChat = conversations
-    .filter((entry) => entry.usage.input + entry.usage.output > 0)
-    .sort((left, right) => right.usage.input + right.usage.output - left.usage.input - left.usage.output)
-    .slice(0, 8)
+  const store = useStore()
+  const { t } = store
+  const log = store.usage.days
 
   const [now] = useState(() => Date.now())
+  const dayLabel = useDayFormat()
 
-  const since = (days: number) => {
-    const limit = now - days * 86_400_000
-    return log
-      .filter((entry) => new Date(entry.day).getTime() >= limit)
-      .reduce(
-        (sum, entry) => ({
-          input: sum.input + entry.input,
-          output: sum.output + entry.output,
-          runs: sum.runs + entry.runs,
-        }),
-        { input: 0, output: 0, runs: 0 }
-      )
-  }
-
-  const cards = [
-    { label: t('settings.today'), value: since(1) },
-    { label: t('settings.thisWeek'), value: since(7) },
-    { label: t('settings.thisMonth'), value: since(30) },
-  ]
-
-  const recent = [...log.slice(0, 14)].reverse()
-  const peak = Math.max(1, ...recent.map((entry) => entry.input + entry.output))
+  const today = totalsOver(log, 1, now)
+  const week = totalsOver(log, 7, now)
+  const month = totalsOver(log, 30, now)
+  const total = month.input + month.output
   const busiest = [...log].sort((a, b) => b.input + b.output - a.input - a.output)[0]
 
+  const rows = [
+    { label: t('settings.thisWeek'), value: week.input + week.output > 0 ? compactTokens(week.input + week.output) : '—' },
+    { label: t('settings.thisMonth'), value: total > 0 ? compactTokens(total) : '—' },
+    { label: t('usage.average'), value: month.days > 0 ? compactTokens(Math.round(total / month.days)) : '—' },
+    { label: t('usage.perTurn'), value: month.runs > 0 ? compactTokens(Math.round(total / month.runs)) : '—' },
+    { label: t('usage.ratio'), value: month.output > 0 ? `${Math.round(month.input / month.output)}:1` : '—' },
+    { label: t('usage.busiest'), value: busiest ? dayLabel(busiest.day) : '—' },
+    ...(month.cost > 0 ? [{ label: t('usage.cost'), value: formatCost(month.cost) }] : []),
+  ]
+
+  if (log.length === 0) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-1 text-center">
+        <Icon name="chart" className="size-6 text-faint" />
+        <p className="text-[13px] text-dim">{t('usage.empty')}</p>
+        <p className="text-xs text-faint">{t('usage.emptyHint')}</p>
+      </div>
+    )
+  }
+
   return (
-    <div className="space-y-5">
-      <div className="grid grid-cols-3 gap-3">
-        {cards.map((card) => {
-          const total = card.value.input + card.value.output
-          const share = total > 0 ? (card.value.input / total) * 100 : 0
+    <div className="space-y-4">
+      <div className="rounded-[var(--radius-panel)] border border-line bg-bg p-4">
+        <p className="text-[11px] font-medium uppercase tracking-wide text-faint">{t('settings.today')}</p>
+        <p className="mt-0.5 text-2xl font-semibold tabular-nums tracking-tight">
+          {(today.input + today.output).toLocaleString()}
+        </p>
+        <p className="text-xs text-dim">
+          {today.runs} {t('settings.runs')}
+          {today.cost > 0 ? ` · ${formatCost(today.cost)}` : ''}
+        </p>
 
-          return (
-            <div key={card.label} className="rounded-[var(--radius-panel)] border border-line bg-bg p-3">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-faint">{card.label}</p>
-              <p className="mt-1 text-lg font-semibold tracking-tight">{total.toLocaleString()}</p>
-              <p className="text-xs text-dim">
-                {card.value.runs} {t('settings.runs')}
-              </p>
-
-              <div className="mt-2 flex h-1.5 overflow-hidden rounded-full bg-raised">
-                <span className="bg-accent" style={{ width: `${share}%` }} />
-                <span className="flex-1 bg-accent/35" />
-              </div>
-              <p className="mt-1.5 flex justify-between text-[11px] text-faint">
-                <span>
-                  {t('settings.usageIn')} {card.value.input.toLocaleString()}
-                </span>
-                <span>
-                  {t('settings.usageOut')} {card.value.output.toLocaleString()}
-                </span>
-              </p>
-            </div>
-          )
-        })}
+        <div className="mt-4">
+          <UsageSplit input={today.input} output={today.output} />
+        </div>
       </div>
 
-      <Section
-        title={t('settings.perDay')}
-        action={
-          busiest ? (
-            <p className="truncate text-[11px] text-faint">
-              {t('settings.busiest')} · {busiest.day} · {(busiest.input + busiest.output).toLocaleString()}
-            </p>
-          ) : null
-        }
-      >
+      <Section title={t('usage.perDay')}>
         <div className="rounded-[var(--radius-panel)] border border-line bg-bg p-3">
-          {recent.length === 0 ? (
-            <p className="py-6 text-center text-[13px] text-faint">{t('home.empty')}</p>
-          ) : (
-            <div className="flex h-32 items-end gap-1.5">
-              {recent.map((entry) => {
-                const total = entry.input + entry.output
-                return (
-                  <span
-                    key={entry.day}
-                    title={`${entry.day} · ${total.toLocaleString()}`}
-                    className="group flex h-full min-w-0 flex-1 flex-col justify-end gap-1"
-                  >
-                    <span
-                      className="flex flex-col justify-end gap-px rounded-t transition-opacity group-hover:opacity-75"
-                      style={{ height: `${(total / peak) * 100}%` }}
-                    >
-                      <span
-                        className="w-full rounded-t bg-accent"
-                        style={{ height: `${total > 0 ? (entry.output / total) * 100 : 0}%` }}
-                      />
-                      <span className="w-full flex-1 bg-accent/35" />
-                    </span>
-                    <span className="truncate text-center text-[9px] text-faint">{entry.day.slice(5)}</span>
-                  </span>
-                )
-              })}
-            </div>
-          )}
+          <UsageBars days={log} />
         </div>
       </Section>
 
-      <Section title={t('settings.perChat')}>
-        <div className="rounded-[var(--radius-panel)] border border-line bg-bg">
-          {byChat.length === 0 ? (
-            <p className="py-6 text-center text-[13px] text-faint">{t('home.empty')}</p>
-          ) : (
-            <ul className="divide-y divide-line">
-              {byChat.map((entry) => (
-                <li key={entry.id} className="flex items-center gap-3 px-3 py-2 text-[13px]">
-                  <span className="min-w-0 flex-1 truncate">{entry.title}</span>
-                  <span className="shrink-0 font-mono text-xs text-faint">
-                    {entry.usage.input.toLocaleString()} · {entry.usage.output.toLocaleString()}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+      <Section title={t('usage.summary')}>
+        <Card>
+          {rows.map((row) => (
+            <Line key={row.label} label={row.label}>
+              <span className="font-mono text-[13px] tabular-nums text-dim">{row.value}</span>
+            </Line>
+          ))}
+        </Card>
       </Section>
+
     </div>
   )
 }
@@ -897,7 +696,8 @@ async function wipe(target: Wipe): Promise<void> {
   const everything = target === 'all'
 
   if (everything || target === 'chats') {
-    for (const conversation of store.conversations) await store.deleteConversation(conversation.id)
+    await conversationsApi.clear()
+    useStore.setState({ conversations: [] })
   }
   if (everything || target === 'runs') {
     await historyApi.clear()
@@ -907,7 +707,7 @@ async function wipe(target: Wipe): Promise<void> {
     await store.patchSettings({ memory: { ...useStore.getState().settings.memory, items: [] } })
   }
   if (everything || target === 'usage') {
-    await store.patchSettings({ usageLog: [], usagePulse: [] })
+    await store.clearUsage()
   }
   if (everything) {
     for (const account of store.accounts) await accountsApi.remove(account.id)
@@ -1002,7 +802,7 @@ function AppTab() {
         </Card>
       </Section>
 
-      <Section title={t('settings.behaviour')}>
+      <Section title={t('settings.interface')}>
         <Card>
           <Line label={t('settings.sendOnEnter')}>
             <Toggle

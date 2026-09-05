@@ -1,5 +1,103 @@
 # Changelog
 
+## [1.3.0]
+
+### Everything reaches the place through the MCP
+
+- The AI no longer has a second way in. Reading, inspecting and applying all go through Roblox Studio's own MCP server, so there is one path to keep working instead of two that drift apart. When it is not connected, the app says so and the editing tools refuse instead of failing quietly.
+- The prompt teaches that path: list the Studio session once and reuse the id, search the tree instead of walking it, run Luau to read and measure but never to change, and propose changes so they land as one reviewable, undoable step.
+- Applying no longer looks for tools by name. The Luau runner is found by its schema, the session id by a named pattern that is then cached, and a failure is read from the server's own error flag rather than by grepping the output for the word "error".
+- Properties Studio refuses are collected and reported instead of being swallowed, missing ancestors are created as the class that belongs there (ScreenGui under StarterGui, Model under Workspace), and the selection is only touched if you ask for it.
+
+### Interfaces are described, not scripted
+
+- `buildUi` takes a screen as a tree — class, style, text, layout, children — and the app compiles the Luau. The model never writes instance code for a GUI again, and the proposal card shows the tree as an outline before anything is applied.
+- Every property is typed. Colors, UDim, UDim2, Vector2, Rect, gradients and enums are checked and encoded, so `CornerRadius`, `Font` and `TextSize` finally land instead of being dropped; whatever a class does not accept is reported by name rather than swallowed.
+- Layout is intent. `fill`, `hug` and pixel or scale extents with a floor and a ceiling become anchors, positions, `AutomaticSize` and a `UISizeConstraint`; padding, direction and gap become `UIPadding` and a list or grid layout.
+- Sixteen presets — screen, panel, card, title, body, caption, primary, secondary, ghost, danger, input, list, divider, badge and the rest — carry their radius, type and states, so one word gives a button that already looks finished.
+- The theme is a palette of tokens resolved while compiling. A node says `surface` or `primary` and gets a `Color3`; no ModuleScript is added to the place, and a screen can override the palette for itself.
+- A rebuild reconciles instead of replacing. Names that exist are reused, a class that changed is swapped, and only what this tool created carries the mark that lets it be pruned — anything added by hand in Studio survives. The whole screen is one `ChangeHistoryService` recording, so one undo takes it back.
+- Hover and pressed states become a single small `UIStates` script with a tween, written only when something actually reacts and removed when nothing does.
+
+### Approvals and two local commands
+
+- Before a tool that can touch the live session runs, the app asks: allow, always allow, or deny. Reading is always free — the server's own read-only hint decides. The answer can be remembered per tool, and the whole gate can be switched to "just run it".
+- `/status` and `/tools` answer from what the app already knows, without spending a token.
+
+### Conversations run side by side
+
+- Every chat owns its own session: messages, spend, proposals, undo history and approval. Starting one no longer refuses because another is answering, and switching away leaves it running with its spinner in the sidebar.
+- A conversation deleted while it works is stopped and dropped.
+
+### The web, in batches
+
+- `searchWeb` takes up to four queries at once and merges them, deduplicated by address, so three angles of a question cost one step instead of three turns.
+- `readPage` became `readPages`: up to eight addresses fetched four at a time, each returned with its title, and a `✓`/`✗` index at the top naming every source that answered and every one that refused.
+- Pages are fetched as a browser is — real user agent, fifteen second timeout, one retry with a looser Accept, content type checked before the body is read — and the extractor keeps the article while dropping script, style, nav, header, footer and aside, decoding the entities a real page carries.
+- Four engines are asked at the same time — DuckDuckGo, its lite front end, Mojeek and Bing — plus Wikipedia's JSON API, and the results are interleaved round robin so no single engine takes the page. If one is blocked or empty, the others still answer.
+- Pages are read to completion instead of cancelling the stream mid flight, and the timeout is now a clock the request cancels when it finishes. Both a cancelled stream and a timer that fired after its answer arrived left the host holding a resource nobody owned, which surfaced later as `The resource id is invalid` with no owner.
+- The prompt is explicit that the web is read with these two tools and nothing else: a Studio tool that happens to speak HTTP is for the place, needs the same session, and is never the way to fetch a page.
+
+### Subagents
+
+- One switch turns on a fixed panel of four specialists — Reviewer, Security, Performance and Game design — that the agent can consult, several at once, on a heavy request. There is nothing to configure and nothing to break.
+
+### Models, from the provider's own catalogue
+
+- The model list is read from each provider and carries what it publishes: context window, output ceiling, image and tool support, reasoning style, and price where there is one. OpenRouter publishes prices, Groq publishes context windows, and Anthropic, OpenAI and B.AI publish neither — so cost is shown only where it is real, and never guessed.
+- Google Gemini joined the providers through its OpenAI-compatible endpoint.
+- Output ceiling, thinking budget and reasoning effort now come from what the model can actually do instead of a fixed number, and a rate limit or a busy provider is retried with backoff instead of ending the turn.
+- An answer cut off at the length limit picks itself back up, up to twice, in the same message.
+- Reasoning is read in every shape providers send it: `reasoning`, `reasoning_content`, `thinking`, `reasoning_details`, and Anthropic's thinking blocks.
+- Every model picker is the same component, loaded automatically when the provider or the key changes. No refresh button anywhere.
+
+### Usage that adds up
+
+- Usage moved out of the settings file into its own ledger, written at most once a second instead of on every exchange.
+- Anthropic cache tokens are counted, so input is no longer reported far below what was billed.
+- The context ring shows the context, not the running total, and side calls — naming a chat, consulting a specialist, summarising — no longer move it.
+- The popover shows what the prompt actually carries, each slice measured from the strings this app built and scaled to the token count the provider charged for.
+- The Usage tab leads with today — the number, the runs, the cost when there is one — a fourteen day bar chart beside it, and the input/output split spelled out underneath with the share output actually represents. Week and month follow as two cards, then average per day, tokens per exchange, the input:output ratio and the busiest day.
+- The chart draws every day in the window whether or not it has data, so it reads the same on the first day as on the fourteenth. Home shows the same bars without dividers, and both surfaces show a real empty state before there is anything to count.
+- The ledger records which model spent what, and the tab lists them with a proportion bar — so a tab that used to be mostly empty space now says where the tokens went.
+- Days are counted where the person is, not where UTC is, and "today" means the calendar day rather than the last twenty-four hours. An evening session used to land on tomorrow and leave today reading zero.
+- The tab stacks: today, the fourteen day chart, the summary rows, then the models — one column, scrolling, no grid of half-empty tiles.
+
+### Lighter turns
+
+- Tool descriptions are cut to a whole sentence and JSON schemas lose what a model never reads — `$schema`, `title`, `examples`, `default` — which is where most of a turn's input was going.
+- The place fits in a smaller budget, and `@Path.To.Script` attaches exactly the sources you mean.
+- Prompt caching covers the system block and the tool list on Anthropic.
+
+### The chat
+
+- The transcript is memoised and each message is its own layout island, so a long conversation with big scripts stays smooth while tokens stream.
+- A button brings you back to the newest message, and scrolling up now wins immediately instead of fighting the auto follow.
+- Script proposals show a real diff with a `+n/-n` count, and an applied change can be reverted from the card.
+- A plan or a question takes the composer's place while it is open, and stays in the transcript as a card afterwards, so approving a plan no longer leaves a one-sided conversation.
+- Editing a message takes over the bubble, keeps its attachments, and saves with Enter or cancels with Escape.
+- Chats are named by the model from the first message, and the sidebar has a search.
+- Slash skills only apply when you type them.
+
+### Settings, plugin and storage
+
+- Six tabs became five: Model, Extensions, Memory, Usage and App, all at one fixed height. Temperature and tool turns are set by the app now.
+- Memory opens with who you are: your Roblox avatar and name, what the app should call you, and what you do — which is also what the model is told.
+- Eight skills, one per area and none repeating another: the trust boundary, saved data, cost at runtime, interface, types, animation assets, chasing a bug to its cause, and writing back like a colleague. Saved facts are a readable list that wraps instead of a row of clipped chips.
+- Context7 and DeepWiki ship connected, alongside Studio, with nothing to configure.
+- The plugin is one button that adapts, reconnects on its own forever, and updates itself whenever the app ships a new copy.
+- The local bridge is paired with a token written into the plugin, so no other process on the machine can drive your Studio.
+- Conversations are one file each, images live outside the transcript, and clearing them sweeps the orphans.
+
+### Repairs
+
+- The chat view was 2,212 lines; it is now nine focused modules and a container.
+- Editing a message showed the text of a different chat.
+- A field inside a dialog lost focus on every keystroke, because the dialog's focus trap re-ran whenever anything re-rendered.
+- A cancelled request no longer surfaces as an unhandled rejection.
+- Keyboard shortcuts stopped hijacking Ctrl+F, Ctrl+S and friends inside text fields, DevTools and the context menu are free again, and dialogs trap focus and close on Escape.
+- Duration reads in whole seconds, dates and times follow the app language, and 38 TypeScript tests plus 19 Rust tests cover the new ground.
+
 ## [1.2.0]
 
 ### One page for every asset

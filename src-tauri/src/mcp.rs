@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,12 +13,24 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 const CALL_TIMEOUT: Duration = Duration::from_secs(90);
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>;
+type Journal = Arc<Mutex<VecDeque<String>>>;
+
+const MAX_LOG_LINES: usize = 200;
 
 struct Server {
     child: Child,
     stdin: ChildStdin,
     pending: Pending,
     nextId: AtomicU64,
+    journal: Journal,
+}
+
+fn note(journal: &Journal, line: String) {
+    let mut log = journal.lock().unwrap();
+    log.push_back(line);
+    while log.len() > MAX_LOG_LINES {
+        log.pop_front();
+    }
 }
 
 #[derive(Default)]
@@ -121,7 +133,7 @@ impl McpHost {
             .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
 
         #[cfg(target_os = "windows")]
@@ -140,6 +152,17 @@ impl McpHost {
             .take()
             .ok_or("The server refused a stdout pipe.")?;
         let pending: Pending = Arc::default();
+        let journal: Journal = Arc::default();
+
+        if let Some(stderr) = child.stderr.take() {
+            let sink = journal.clone();
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    note(&sink, line);
+                }
+            });
+        }
 
         let reader = pending.clone();
         tokio::spawn(async move {
@@ -163,6 +186,7 @@ impl McpHost {
             stdin,
             pending,
             nextId: AtomicU64::new(1),
+            journal,
         };
         self.servers.lock().await.insert(id.clone(), server);
 
@@ -250,7 +274,32 @@ impl McpHost {
         let message = tokio::time::timeout(CALL_TIMEOUT, receiver)
             .await
             .map_err(|_| format!("{method} timed out after 90 seconds."))?
-            .map_err(|_| "The MCP server stopped before answering.".to_owned())?;
+            .map_err(|_| {
+                let recent = {
+                    let servers = self.servers.try_lock().ok();
+                    servers
+                        .and_then(|servers| {
+                            servers.get(id).map(|server| {
+                                server
+                                    .journal
+                                    .lock()
+                                    .unwrap()
+                                    .iter()
+                                    .rev()
+                                    .take(3)
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                                    .join(" | ")
+                            })
+                        })
+                        .unwrap_or_default()
+                };
+                if recent.is_empty() {
+                    "The MCP server stopped before answering.".to_owned()
+                } else {
+                    format!("The MCP server stopped before answering: {recent}")
+                }
+            })?;
 
         if let Some(error) = message.get("error") {
             let text = error

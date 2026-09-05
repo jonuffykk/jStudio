@@ -3,7 +3,7 @@ import type { McpServer } from '@/app/lib/schemas'
 
 const PROTOCOL_VERSION = '2025-06-18'
 const VERSION = '1.0.6'
-const TIMEOUT_MS = 30_000
+const TIMEOUT_MS = 90_000
 
 export type McpTool = {
   name: string
@@ -11,6 +11,7 @@ export type McpTool = {
   remoteName: string
   description: string
   inputSchema: Record<string, unknown>
+  readOnly: boolean
 }
 
 export type McpConnection = {
@@ -18,7 +19,14 @@ export type McpConnection = {
   tools: McpTool[]
   sessionId: string | null
   error: string | null
+  latencyMs: number
+  connectedAt: number
 }
+
+export type McpResult = { text: string; failed: boolean }
+
+/** A tool is replayable only when the server says so. Silence means no. */
+export const isReadOnly = (tool: McpTool) => tool.readOnly
 
 export const studioServer: McpServer = {
   id: 'robloxStudio',
@@ -31,12 +39,44 @@ export const studioServer: McpServer = {
   enabled: true,
 }
 
+/** Always on, never edited: the place, the docs and the repositories. */
+export const builtinServers: McpServer[] = [
+  studioServer,
+  {
+    id: 'context7',
+    label: 'Context7',
+    transport: 'http',
+    command: '',
+    args: [],
+    url: 'https://mcp.context7.com/mcp',
+    headers: {},
+    enabled: true,
+  },
+  {
+    id: 'deepwiki',
+    label: 'DeepWiki',
+    transport: 'http',
+    command: '',
+    args: [],
+    url: 'https://mcp.deepwiki.com/mcp',
+    headers: {},
+    enabled: true,
+  },
+]
+
+export const isBuiltinServer = (id: string) => builtinServers.some((entry) => entry.id === id)
+
 let requestId = 0
 
 const toolName = (serverId: string, remoteName: string) =>
   `${serverId}_${remoteName}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64)
 
-type RemoteTool = { name: string; description?: string; inputSchema?: Record<string, unknown> }
+type RemoteTool = {
+  name: string
+  description?: string
+  inputSchema?: Record<string, unknown>
+  annotations?: { readOnlyHint?: boolean }
+}
 
 const emptySchema = { type: 'object', properties: {} }
 
@@ -47,6 +87,7 @@ function describeTools(server: McpServer, tools: RemoteTool[]): McpTool[] {
     remoteName: tool.name,
     description: tool.description ?? '',
     inputSchema: tool.inputSchema ?? emptySchema,
+    readOnly: tool.annotations?.readOnlyHint === true,
   }))
 }
 
@@ -105,12 +146,27 @@ async function httpRpc(
 }
 
 export async function connect(server: McpServer): Promise<McpConnection> {
-  const base: McpConnection = { server, tools: [], sessionId: null, error: null }
+  const startedAt = Date.now()
+  const base: McpConnection = {
+    server,
+    tools: [],
+    sessionId: null,
+    error: null,
+    latencyMs: 0,
+    connectedAt: 0,
+  }
+
+  const measured = (patch: Partial<McpConnection>): McpConnection => ({
+    ...base,
+    ...patch,
+    latencyMs: Date.now() - startedAt,
+    connectedAt: patch.error ? 0 : Date.now(),
+  })
 
   try {
     if (server.transport === 'stdio') {
       const { tools } = await mcpHost.connect(server.id, server.command, server.args)
-      return { ...base, tools: describeTools(server, tools) }
+      return measured({ tools: describeTools(server, tools) })
     }
 
     const initialized = await httpRpc(server, null, 'initialize', {
@@ -123,9 +179,9 @@ export async function connect(server: McpServer): Promise<McpConnection> {
     const listed = await httpRpc(server, initialized.sessionId, 'tools/list', {})
     const tools = Array.isArray(listed.result.tools) ? (listed.result.tools as RemoteTool[]) : []
 
-    return { ...base, sessionId: initialized.sessionId, tools: describeTools(server, tools) }
+    return measured({ sessionId: initialized.sessionId, tools: describeTools(server, tools) })
   } catch (error) {
-    return { ...base, error: error instanceof Error ? error.message : String(error) }
+    return measured({ error: error instanceof Error ? error.message : String(error) })
   }
 }
 
@@ -137,10 +193,11 @@ export async function callTool(
   connection: McpConnection,
   tool: McpTool,
   args: Record<string, unknown>
-): Promise<string> {
+): Promise<McpResult> {
   try {
     if (connection.server.transport === 'stdio') {
-      return await mcpHost.callTool(connection.server.id, tool.remoteName, args)
+      const text = await mcpHost.callTool(connection.server.id, tool.remoteName, args)
+      return { text, failed: false }
     }
 
     const { result } = await httpRpc(connection.server, connection.sessionId, 'tools/call', {
@@ -157,8 +214,11 @@ export async function callTool(
       .join('\n')
       .trim()
 
-    return text || 'The tool returned nothing.'
+    return { text: text || 'The tool returned nothing.', failed: result.isError === true }
   } catch (error) {
-    return `The tool failed: ${error instanceof Error ? error.message : String(error)}`
+    return {
+      text: `The tool failed: ${error instanceof Error ? error.message : String(error)}`,
+      failed: true,
+    }
   }
 }

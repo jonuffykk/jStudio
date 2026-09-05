@@ -1,26 +1,28 @@
-import { studio } from '@/app/lib/ipc'
 import { luauFor } from '@/app/lib/luau'
 import { callTool, type McpConnection, type McpTool } from '@/app/lib/mcp'
 import type { Action } from '@/app/lib/schemas'
 
-export type ApplyChannel = 'studioMcp' | 'plugin'
-export type ApplyResult = { ok: boolean; message: string; channel: ApplyChannel | null }
+export type ApplyResult = { ok: boolean; message: string; skipped: string[] }
 
-const LUAU_TOOLS = ['execute_luau', 'run_code', 'run_luau', 'execute_code', 'runcode']
-const SESSION_TOOLS = ['list_roblox_studios', 'list_studios']
 const CODE_KEYS = ['command', 'code', 'script', 'source', 'luau']
+const SESSION_KEY = /^studio(_?id)?$/i
 
-const failed = /\berror\b|\bfailed\b|attempt to|stack traceback|is not a valid member/i
+const runsLuau = /luau|lua|code|script|eval|exec/i
+const listsSessions = /list.*(studio|session)|studio.*list/i
 
-function findTool(connection: McpConnection, names: string[]): McpTool | undefined {
-  return names
-    .map((name) => connection.tools.find((tool) => tool.remoteName.toLowerCase() === name))
-    .find(Boolean)
-}
+const skippedNote = /\(skipped: ([^)]*)\)/
 
 function properties(tool: McpTool): Record<string, unknown> {
   const schema = tool.inputSchema as { properties?: Record<string, unknown> }
   return schema.properties ?? {}
+}
+
+/** The Luau runner is the tool that takes a code-shaped argument, whatever it is called. */
+function luauTool(connection: McpConnection): McpTool | undefined {
+  return connection.tools.find((tool) => {
+    const keys = Object.keys(properties(tool))
+    return runsLuau.test(tool.remoteName) && CODE_KEYS.some((key) => keys.includes(key))
+  })
 }
 
 function codeKey(tool: McpTool): string {
@@ -34,64 +36,68 @@ export function studioMcp(connections: McpConnection[]): McpConnection | undefin
   )
 }
 
+export function canApply(connections: McpConnection[]): boolean {
+  const connection = studioMcp(connections)
+  return !!connection && !!luauTool(connection)
+}
+
+let sessionCache: { serverId: string; key: string; value: string } | null = null
+
 async function sessionArgs(connection: McpConnection, tool: McpTool): Promise<Record<string, unknown>> {
-  const keys = Object.keys(properties(tool))
-  const key = keys.find((entry) => /^studio(_?id)?$/i.test(entry))
+  const key = Object.keys(properties(tool)).find((entry) => SESSION_KEY.test(entry))
   if (!key) return {}
 
-  const lister = findTool(connection, SESSION_TOOLS)
+  if (sessionCache && sessionCache.serverId === connection.server.id && sessionCache.key === key) {
+    return { [key]: sessionCache.value }
+  }
+
+  const lister = connection.tools.find((entry) => listsSessions.test(entry.remoteName))
   if (!lister) return {}
 
   const listed = await callTool(connection, lister, {})
-  const id = /\b\d{3,}\b/.exec(listed)?.[0]
-  return id ? { [key]: id } : {}
+  const id = /"?(?:studioId|id)"?\s*[:=]\s*"?(\d{3,})/i.exec(listed.text)?.[1] ?? /\b\d{4,}\b/.exec(listed.text)?.[0]
+  if (!id) return {}
+
+  sessionCache = { serverId: connection.server.id, key, value: id }
+  return { [key]: id }
 }
 
-async function applyThroughMcp(action: Action, connection: McpConnection): Promise<ApplyResult | null> {
-  const tool = findTool(connection, LUAU_TOOLS)
-  if (!tool) return null
-
-  const args = { ...(await sessionArgs(connection, tool)), [codeKey(tool)]: luauFor(action) }
-  const message = (await callTool(connection, tool, args)).trim()
-
-  return failed.test(message)
-    ? { ok: false, message, channel: 'studioMcp' }
-    : { ok: true, message: message || `Applied ${action.path}.`, channel: 'studioMcp' }
-}
-
-async function applyThroughPlugin(action: Action): Promise<ApplyResult> {
-  const id = await studio.enqueue(action)
-
-  for (let attempt = 0; attempt < 40; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 400))
-    const result = await studio.result(id)
-    if (result) return { ok: result.status === 'done', message: result.message, channel: 'plugin' }
-  }
-  return { ok: false, message: 'Studio never answered. Is the plugin still connected?', channel: 'plugin' }
+export function forgetStudioSession(): void {
+  sessionCache = null
 }
 
 export async function applyAction(
   action: Action,
   connections: McpConnection[],
-  pluginOnline: boolean
+  select = false
 ): Promise<ApplyResult> {
   const connection = studioMcp(connections)
+  if (!connection) {
+    return { ok: false, message: "Roblox Studio's MCP server is not connected.", skipped: [] }
+  }
 
-  if (connection) {
-    try {
-      const result = await applyThroughMcp(action, connection)
-      if (result?.ok || (result && !pluginOnline)) return result
-    } catch {
+  const tool = luauTool(connection)
+  if (!tool) {
+    return {
+      ok: false,
+      message: 'Roblox Studio is connected but exposes no tool that can run Luau.',
+      skipped: [],
     }
   }
 
-  if (pluginOnline) return applyThroughPlugin(action)
+  const args = { ...(await sessionArgs(connection, tool)), [codeKey(tool)]: luauFor(action, select) }
+  const result = await callTool(connection, tool, args)
+  const message = result.text.trim()
 
-  return {
-    ok: false,
-    message: connection
-      ? 'Roblox Studio rejected the change and the plugin is not connected to retry it.'
-      : "Connect Roblox Studio's MCP server, or the jStudio plugin, before applying changes.",
-    channel: null,
+  if (result.failed) {
+    sessionCache = null
+    return { ok: false, message, skipped: [] }
   }
+
+  const skipped = (skippedNote.exec(message)?.[1] ?? '')
+    .split(';')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+
+  return { ok: true, message: message || `Applied ${action.path}.`, skipped }
 }

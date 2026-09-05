@@ -11,21 +11,29 @@ import {
   secrets,
   studio,
 } from '@/app/lib/ipc'
-import { connect, disconnect, studioServer, type McpConnection } from '@/app/lib/mcp'
+import { builtinServers, connect, disconnect, type McpConnection } from '@/app/lib/mcp'
+import { capabilityOf, costOf, findModel, type ModelInfo } from '@/app/lib/models'
+import {
+  emptyUsage,
+  flushUsage,
+  loadUsage,
+  recordUsage,
+  saveUsage,
+  type UsageSource,
+  type UsageStore,
+} from '@/app/lib/usage'
 import type { McpServer } from '@/app/lib/schemas'
 import { translate, type Language, type MessageKey } from '@/app/lib/i18n'
 import { mergeSkills } from '@/app/lib/skills'
 import { findProvider } from '@/app/lib/providers'
-import { listModels, resolveEndpoint } from '@/app/lib/llm'
+import { listCatalog, resolveEndpoint } from '@/app/lib/llm'
 import { checkUpdate } from '@/app/lib/host'
 import {
   bridgeStatus as bridgeStatusSchema,
-  defaultAgents,
   pluginStatus as pluginStatusSchema,
   settings as settingsSchema,
   type Account,
   type AssetKind,
-  type AgentProfile,
   type BridgeStatus,
   type Conversation,
   type PluginStatus,
@@ -81,6 +89,7 @@ type Store = {
   plugin: PluginStatus
   nodes: ProjectNode[]
   truncated: boolean
+  selection: string[]
   accounts: Account[]
   activeAccountId: string | null
   runs: RunRecord[]
@@ -93,7 +102,9 @@ type Store = {
   spoofStatus: string
   spoofProgress: { total: number; done: number; failed: number }
   spoofItems: SpoofItem[]
-  models: Record<string, string[]>
+  models: Record<string, ModelInfo[]>
+  modelsLoading: boolean
+  usage: UsageStore
 
   t: (key: MessageKey, values?: Record<string, string | number>) => string
   activeAccount: () => Account | undefined
@@ -127,9 +138,11 @@ type Store = {
   reconnectMcp: (announce?: boolean) => Promise<void>
   connectServer: (server: McpServer) => Promise<void>
   dropServer: (id: string) => Promise<void>
-  loadModels: (force?: boolean) => Promise<string[]>
+  loadModels: (force?: boolean) => Promise<ModelInfo[]>
+  modelInfo: (model?: string) => ModelInfo
   rememberFact: (text: string) => void
-  recordUsage: (input: number, output: number) => void
+  recordSpend: (input: number, output: number, model: string, source: UsageSource) => void
+  clearUsage: () => Promise<void>
   notify: (body: string) => void
   resetSpoof: () => void
   lookForUpdate: () => Promise<void>
@@ -184,13 +197,6 @@ let factId = 0
 
 const newFactId = () => `mem${Date.now().toString(36)}${(factId += 1).toString(36)}`
 
-function mergeAgents(stored: AgentProfile[]): AgentProfile[] {
-  return defaultAgents.map((preset) => {
-    const saved = stored.find((entry) => entry.id === preset.id)
-    return saved ? { ...preset, model: saved.model, instructions: saved.instructions, enabled: saved.enabled } : preset
-  })
-}
-
 export const useStore = create<Store>((set, get) => ({
   booted: false,
   ready: false,
@@ -209,6 +215,7 @@ export const useStore = create<Store>((set, get) => ({
   plugin: pluginStatusSchema.parse({}),
   nodes: [],
   truncated: false,
+  selection: [],
   accounts: [],
   activeAccountId: null,
   runs: [],
@@ -222,6 +229,8 @@ export const useStore = create<Store>((set, get) => ({
   spoofProgress: { total: 0, done: 0, failed: 0 },
   spoofItems: [],
   models: {},
+  modelsLoading: false,
+  usage: emptyUsage,
 
   t: (key, values) => translate(get().settings.language as Language, key, values),
 
@@ -303,6 +312,7 @@ export const useStore = create<Store>((set, get) => ({
     }
     if (patch.providerId) {
       set({ apiKey: await secrets.get(`apiKey.${patch.providerId}`) })
+      void get().loadModels()
     }
     await config.save(next).catch(() => {})
   },
@@ -310,6 +320,7 @@ export const useStore = create<Store>((set, get) => ({
   setApiKey: async (value) => {
     set({ apiKey: value })
     await secrets.set(`apiKey.${get().settings.providerId}`, value.trim())
+    void get().loadModels(true)
   },
 
   refreshStatus: async () => {
@@ -349,10 +360,7 @@ export const useStore = create<Store>((set, get) => ({
       for (const connection of get().mcp) await disconnect(connection.server)
 
       const { settings } = get()
-      const servers = [
-        ...(settings.studioMcpEnabled ? [studioServer] : []),
-        ...settings.mcpServers.filter((server) => server.enabled),
-      ]
+      const servers = [...builtinServers, ...settings.mcpServers.filter((server) => server.enabled)]
 
       const connections = await Promise.all(servers.map(connect))
       if (announce) {
@@ -384,15 +392,16 @@ export const useStore = create<Store>((set, get) => ({
     const { settings, apiKey, models } = get()
     const cached = models[settings.providerId]
     if (cached && !force) return cached
+    if (findProvider(settings.providerId).needsKey && !apiKey) return cached ?? []
 
+    set({ modelsLoading: true })
     try {
-      const list = await listModels(
+      const list = await listCatalog(
         resolveEndpoint({
           providerId: settings.providerId,
           customBaseUrl: settings.customBaseUrl,
           apiKey,
           model: settings.model,
-          temperature: settings.temperature,
           effort: settings.effort,
         })
       )
@@ -401,7 +410,16 @@ export const useStore = create<Store>((set, get) => ({
     } catch (error) {
       if (force) get().toast(error instanceof Error ? error.message : String(error), 'danger')
       return cached ?? []
+    } finally {
+      set({ modelsLoading: false })
     }
+  },
+
+  modelInfo: (model) => {
+    const { settings, models } = get()
+    const id = model || settings.model
+    const catalogue = models[settings.providerId]
+    return catalogue ? findModel(catalogue, id) : { id, label: id, ...capabilityOf(id), inputPrice: null, outputPrice: null, free: false }
   },
 
   rememberFact: (text) => {
@@ -419,31 +437,25 @@ export const useStore = create<Store>((set, get) => ({
     })
   },
 
-  recordUsage: (input, output) => {
-    const { settings } = get()
-    const day = new Date().toISOString().slice(0, 10)
-    const log = [...settings.usageLog]
-    const index = log.findIndex((entry) => entry.day === day)
+  recordSpend: (input, output, model, source) => {
+    if (input <= 0 && output <= 0) return
 
-    if (index === -1) log.unshift({ day, input, output, runs: 1 })
-    else {
-      const current = log[index]
-      if (current) {
-        log[index] = {
-          day,
-          input: current.input + input,
-          output: current.output + output,
-          runs: current.runs + 1,
-        }
-      }
-    }
+    const { usage } = get()
+    const next = recordUsage(usage, {
+      input,
+      output,
+      model,
+      source,
+      cost: costOf(get().modelInfo(model), input, output),
+    })
 
-    const cutoff = Date.now() - 172_800_000
-    const pulse = [...settings.usagePulse, { at: Date.now(), input, output }]
-      .filter((entry) => entry.at >= cutoff)
-      .slice(-500)
+    set({ usage: next })
+    saveUsage(next)
+  },
 
-    void get().patchSettings({ usageLog: log.slice(0, 120), usagePulse: pulse })
+  clearUsage: async () => {
+    set({ usage: emptyUsage })
+    saveUsage(emptyUsage)
   },
 
   notify: (body) => {
@@ -471,14 +483,12 @@ export const useStore = create<Store>((set, get) => ({
     const settings = {
       ...stored,
       skills: mergeSkills(stored.skills),
-      agents: mergeAgents(stored.agents),
       memory: {
         ...stored.memory,
         items: stored.memory.items.filter(
           (entry, index, list) => list.findIndex((other) => other.id === entry.id) === index
         ),
       },
-      studioMcpEnabled: true,
       contextLimit: stored.contextLimit === 1_000_000 ? 500_000 : stored.contextLimit,
     }
     paintTheme(settings.theme)
@@ -494,6 +504,7 @@ export const useStore = create<Store>((set, get) => ({
       })
 
     await Promise.all([
+      loadUsage().then((usage) => set({ usage })),
       get().refreshStatus(),
       get().refreshTree(),
       get().refreshAccounts(),
@@ -521,7 +532,7 @@ export const useStore = create<Store>((set, get) => ({
       const wasOffline = !get().status.online
       set({ status: next })
 
-      if (next.online && wasOffline && get().settings.studioMcpEnabled && !get().studioMcpReady()) {
+      if (next.online && wasOffline && !get().studioMcpReady()) {
         void get().reconnectMcp()
       }
     })
@@ -529,8 +540,11 @@ export const useStore = create<Store>((set, get) => ({
       set({ status: bridgeStatusSchema.parse(payload) })
       void get().refreshTree()
     })
-    await listen<{ count: number }>('studio:selection', ({ count }) =>
-      set((state) => ({ status: { ...state.status, selectionCount: count } }))
+    await listen<{ count: number; paths?: string[] }>('studio:selection', ({ count, paths }) =>
+      set((state) => ({
+        status: { ...state.status, selectionCount: count },
+        selection: (paths ?? []).slice(0, 30),
+      }))
     )
     await listen<{ text: string }>('spoof:status', ({ text }) => set({ spoofStatus: text }))
     await listen<{ total: number; done: number; failed: number }>('spoof:progress', (progress) =>
@@ -546,6 +560,8 @@ export const useStore = create<Store>((set, get) => ({
         return { spoofItems: next }
       })
     )
+
+    window.addEventListener('beforeunload', flushUsage)
 
     await get().reconnectMcp()
     void get().lookForUpdate()

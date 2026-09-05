@@ -143,6 +143,7 @@ export const conversations = {
   load: async () => (isDesktop() ? parseConversations(await call('conversationsLoad')) : []),
   save: async (value: Conversation) => parseConversations(await call('conversationSave', { conversation: value })),
   remove: async (id: string) => parseConversations(await call('conversationDelete', { id })),
+  clear: () => call<void>('conversationsClear'),
 }
 
 export type McpToolDescriptor = { name: string; description?: string; inputSchema?: Record<string, unknown> }
@@ -154,6 +155,17 @@ export const mcpHost = {
   disconnect: (id: string) => call<void>('mcpDisconnect', { id }),
   callTool: (id: string, name: string, args: Record<string, unknown>) =>
     call<string>('mcpCall', { id, name, args }),
+}
+
+export const usage = {
+  load: async (): Promise<{ days: unknown[]; pulse: unknown[] }> =>
+    isDesktop() ? call('usageLoad') : { days: [], pulse: [] },
+  save: (value: { days: unknown[]; pulse: unknown[] }) => call<void>('usageSave', { value }),
+}
+
+export const images = {
+  save: (dataUrl: string) => call<string>('imageSave', { dataUrl }),
+  load: (name: string) => call<string | null>('imageLoad', { name }),
 }
 
 export async function pickFolder(): Promise<string | null> {

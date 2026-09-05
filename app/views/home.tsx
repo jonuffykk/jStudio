@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { plugin as pluginApi } from '@/app/lib/ipc'
 import { findProvider } from '@/app/lib/providers'
+import { UsageBars } from '@/app/ui/usageChart'
+import { totalsOver } from '@/app/lib/usage'
 import { installUpdate, play } from '@/app/lib/host'
 import { useStore } from '@/app/lib/state'
 import { Button, Icon, Panel, Skeleton, Spinner, cx } from '@/app/ui/primitives'
@@ -14,9 +16,8 @@ const compact = (value: number) => (value >= 1000 ? `${(value / 1000).toFixed(1)
 
 export function HomeView() {
   const store = useStore()
-  const { status, plugin, settings, nodes, conversations, runs, t } = store
+  const { status, plugin, settings, conversations, runs, t } = store
   const account = store.activeAccount()
-  const scripts = nodes.filter((node) => node.source !== undefined).length
 
   const [installing, setInstalling] = useState(false)
   const autoInstalled = useRef(false)
@@ -60,16 +61,15 @@ export function HomeView() {
     store.setView('build')
   }
 
-  const days = settings.usageLog.slice(0, 7)
-  const today = days[0]
-  const peak = Math.max(1, ...days.map((entry) => entry.input + entry.output))
+  const today = totalsOver(store.usage.days, 1)
+  const spent = store.usage.days.reduce((sum, entry) => sum + entry.input + entry.output, 0)
 
   const windows = [
     { label: t('home.last6'), hours: 6 },
     { label: t('home.last24'), hours: 24 },
   ].map((entry) => ({
     label: entry.label,
-    tokens: settings.usagePulse
+    tokens: store.usage.pulse
       .filter((pulse) => pulse.at >= Date.now() - entry.hours * 3_600_000)
       .reduce((sum, pulse) => sum + pulse.input + pulse.output, 0),
   }))
@@ -128,7 +128,9 @@ export function HomeView() {
                         ? t('home.noStudio')
                         : status.nodeCount === 0
                           ? t('home.syncing')
-                          : `${status.nodeCount} ${t('status.instances')} · ${scripts} ${t('status.scripts')}`
+                          : store.studioMcpReady()
+                            ? t('home.placeReady')
+                            : t('home.placeOffline')
                     }
                   />
 
@@ -165,39 +167,40 @@ export function HomeView() {
 
             <div>
               <Panel title={t('home.usage')}>
-                <p className="text-[11px] font-medium uppercase tracking-wide text-faint">
-                  {t('home.tokensToday')}
-                </p>
-                <p className="text-2xl font-semibold tracking-tight">
-                  {compact((today?.input ?? 0) + (today?.output ?? 0))}
-                </p>
-                <p className="text-xs text-dim">
-                  {today?.runs ?? 0} {t('home.requests')}
-                </p>
+                {spent === 0 ? (
+                  <div className="flex min-h-[152px] flex-col items-center justify-center gap-1 text-center">
+                    <Icon name="chart" className="size-5 text-faint" />
+                    <p className="text-[13px] text-dim">{t('usage.empty')}</p>
+                    <p className="text-xs text-faint">{t('usage.emptyHint')}</p>
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-faint">
+                      {t('home.tokensToday')}
+                    </p>
+                    <p className="text-2xl font-semibold tabular-nums tracking-tight">
+                      {compact(today.input + today.output)}
+                    </p>
+                    <p className="text-xs text-dim">
+                      {today.runs} {t('home.requests')}
+                    </p>
 
-                <div className="mt-3 flex h-16 items-end gap-1">
-                  {days.length === 0 ? (
-                    <p className="text-[13px] text-faint">{t('home.empty')}</p>
-                  ) : (
-                    [...days].reverse().map((entry) => (
-                      <span
-                        key={entry.day}
-                        title={`${entry.day} · ${(entry.input + entry.output).toLocaleString()}`}
-                        className="min-h-1 flex-1 rounded-t bg-accent/40 transition-colors hover:bg-accent"
-                        style={{ height: `${((entry.input + entry.output) / peak) * 100}%` }}
-                      />
-                    ))
-                  )}
-                </div>
+                    <div className="mt-3">
+                      <UsageBars days={store.usage.days} span={10} height="h-12" />
+                    </div>
 
-                <ul className="mt-auto divide-y divide-line border-t border-line pt-1">
-                  {windows.map((window) => (
-                    <li key={window.label} className="flex items-center justify-between gap-4 py-1.5">
-                      <span className="text-[13px] text-dim">{window.label}</span>
-                      <span className="font-mono text-xs text-faint">{compact(window.tokens)}</span>
-                    </li>
-                  ))}
-                </ul>
+                    <ul className="mt-auto space-y-1 pt-2">
+                      {windows.map((window) => (
+                        <li key={window.label} className="flex items-center justify-between gap-4">
+                          <span className="text-[13px] text-dim">{window.label}</span>
+                          <span className="font-mono text-xs tabular-nums text-faint">
+                            {compact(window.tokens)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
               </Panel>
             </div>
 

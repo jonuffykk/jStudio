@@ -31,6 +31,21 @@ const navigation: { view: View; icon: string; label: MessageKey }[] = [
   { view: 'assets', icon: 'assets', label: 'nav.assets' },
 ]
 
+/**
+ * A cancelled request leaves the host holding a resource nobody owns, and the
+ * plugin reports that as a rejection with no owner. It is noise, not a crash,
+ * and this is installed at load so nothing can reject before it.
+ */
+const harmless = /resource id .* is invalid|abort(ed)?|AbortError|The operation was aborted/i
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason as { message?: string; name?: string } | undefined
+    const text = String(reason?.message ?? reason?.name ?? event.reason ?? '')
+    if (harmless.test(text)) event.preventDefault()
+  })
+}
+
 export function Shell() {
   const store = useStore()
 
@@ -42,24 +57,18 @@ export function Shell() {
   }, [])
 
   useEffect(() => {
-    const browserKeys = new Set(['f', 'p', 'r', 'u', 'j', 's', 'o', '+', '-', '0'])
+    const typingIn = (target: EventTarget | null) => {
+      const node = target as HTMLElement | null
+      return !!node?.closest('input, textarea, [contenteditable="true"]')
+    }
 
     const onKey = (event: KeyboardEvent) => {
       const state = useStore.getState()
       const key = event.key.toLowerCase()
 
-      if (key === 'f5' || key === 'f12' || key === 'f3' || key === 'f7') {
-        event.preventDefault()
-        return
-      }
-
-      if (!(event.ctrlKey || event.metaKey)) return
-      if (event.shiftKey && ['i', 'j', 'c'].includes(key)) {
-        event.preventDefault()
-        return
-      }
-      if (browserKeys.has(key)) event.preventDefault()
+      if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey) return
       if (!state.settings.onboarded) return
+      if (typingIn(event.target) && !['k', 'b', ','].includes(key)) return
 
       const views: View[] = ['home', 'build', 'assets']
       const view = views[Number(key) - 1]
@@ -105,16 +114,8 @@ export function Shell() {
       }
     }
 
-    const onMenu = (event: MouseEvent) => {
-      if (!(event.target as HTMLElement).closest('input, textarea, [data-selectable]')) event.preventDefault()
-    }
-
     window.addEventListener('keydown', onKey)
-    window.addEventListener('contextmenu', onMenu)
-    return () => {
-      window.removeEventListener('keydown', onKey)
-      window.removeEventListener('contextmenu', onMenu)
-    }
+    return () => window.removeEventListener('keydown', onKey)
   }, [])
 
   if (!store.booted) return <Splash />

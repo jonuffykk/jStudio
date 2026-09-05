@@ -300,7 +300,10 @@ export function Textarea({
       placeholder={placeholder}
       spellCheck={false}
       onChange={(event) => onChange(event.target.value)}
-      className={cx(controlClass, 'resize-none font-mono text-[13px] leading-relaxed')}
+      className={cx(
+        controlClass,
+        'resize-none whitespace-pre-wrap break-words font-mono text-[13px] leading-relaxed'
+      )}
     />
   )
 }
@@ -431,6 +434,17 @@ export function EmptyState({
   )
 }
 
+function useEscape(open: boolean, onClose: () => void): void {
+  useEffect(() => {
+    if (!open) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+}
+
 export function Modal({
   open,
   onClose,
@@ -445,16 +459,49 @@ export function Modal({
   children: ReactNode
 }) {
   const ref = useRef<HTMLDivElement>(null)
+  const close = useRef(onClose)
 
   useEffect(() => {
+    close.current = onClose
+  }, [onClose])
+
+  /** Depends on `open` alone: a re-render must never steal focus from a field. */
+  useEffect(() => {
     if (!open) return
+
+    const panel = ref.current
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
+      if (event.key === 'Escape') {
+        close.current()
+        return
+      }
+      if (event.key !== 'Tab' || !panel) return
+
+      const focusable = panel.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])'
+      )
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (!first || !last) return
+
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
     }
+
+    const restore = document.activeElement as HTMLElement | null
     window.addEventListener('keydown', onKey)
-    ref.current?.focus()
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
+    panel?.focus()
+
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      restore?.focus?.()
+    }
+  }, [open])
 
   if (!open) return null
 
@@ -476,7 +523,14 @@ export function Modal({
           <h2 className="text-sm font-semibold">{title}</h2>
           <IconButton icon="close" title="Close" onClick={onClose} />
         </header>
-        <div className="max-h-[70vh] overflow-y-auto p-5">{children}</div>
+        <div
+          className={cx(
+            'overflow-y-auto overscroll-contain p-5',
+            wide ? 'h-[min(68vh,42rem)]' : 'max-h-[70vh]'
+          )}
+        >
+          {children}
+        </div>
       </div>
     </div>
   )
@@ -532,12 +586,14 @@ export function Popover({
   align?: 'left' | 'right'
   children: ReactNode
 }) {
+  useEscape(open, onClose)
   if (!open) return null
 
   return (
     <>
       <div className="fixed inset-0 z-40" onClick={onClose} />
       <div
+        role="menu"
         className={cx(
           'riseIn absolute bottom-full z-50 mb-2 min-w-56 overflow-hidden rounded-[var(--radius-panel)] border border-line bg-surface p-1.5',
           align === 'right' ? 'right-0' : 'left-0'
@@ -565,9 +621,11 @@ export function MenuItem({
   return (
     <button
       type="button"
+      role="menuitem"
+      aria-current={active || undefined}
       onClick={onClick}
       className={cx(
-        'flex w-full items-center gap-2.5 rounded-[var(--radius-control)] px-2.5 py-2 text-left text-[13px] transition-colors',
+        'flex w-full items-center gap-2.5 rounded-[var(--radius-control)] px-2.5 py-2 text-left text-[13px] transition-colors focus-visible:bg-raised focus-visible:outline-none',
         tone === 'danger'
           ? 'text-danger hover:bg-danger/10'
           : active
@@ -598,6 +656,7 @@ export function Menu({
   onClose: () => void
   children: ReactNode
 }) {
+  useEscape(!!at, onClose)
   if (!at) return null
 
   const up = typeof window !== 'undefined' && at.top > window.innerHeight - 220
@@ -606,6 +665,7 @@ export function Menu({
     <>
       <div className="fixed inset-0 z-40" onClick={onClose} />
       <div
+        role="menu"
         style={up ? { bottom: window.innerHeight - at.top + 34, left: at.left } : { top: at.top, left: at.left }}
         className="riseIn fixed z-50 w-44 -translate-x-full overflow-hidden rounded-[var(--radius-panel)] border border-line bg-surface p-1.5"
       >

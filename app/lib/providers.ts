@@ -1,4 +1,12 @@
-export type ProviderId = 'anthropic' | 'openai' | 'bai' | 'groq' | 'openrouter' | 'ollama' | 'custom'
+export type ProviderId =
+  | 'anthropic'
+  | 'openai'
+  | 'gemini'
+  | 'bai'
+  | 'groq'
+  | 'openrouter'
+  | 'ollama'
+  | 'custom'
 
 export type Provider = {
   id: ProviderId
@@ -41,6 +49,16 @@ export const providers: Provider[] = [
     dialect: 'openai',
     fallbackModels: [],
     hint: 'Solid all rounder. Pay per use.',
+  },
+  {
+    id: 'gemini',
+    label: 'Google Gemini',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    keyUrl: 'https://aistudio.google.com/apikey',
+    needsKey: true,
+    dialect: 'openai',
+    fallbackModels: [],
+    hint: 'Huge context and a free tier in AI Studio.',
   },
   {
     id: 'bai',
@@ -87,36 +105,4 @@ export const providers: Provider[] = [
 export const findProvider = (id: ProviderId): Provider =>
   providers.find((provider) => provider.id === id) ?? providers[0]!
 
-const notForCode =
-  /whisper|tts|text-to-speech|embed|moderation|guard|playai|orpheus|dall-e|stable-diffusion|rerank|sora|image|vision-only/i
-
-export const usableForCode = (model: string) => !notForCode.test(model)
-
-const seesImages =
-  /gpt-4o|gpt-4\.1|gpt-5|^o[34]|claude|gemini|llama-(3\.2-(11|90)b|4)|pixtral|vl\b|-vl-|vision|grok-[0-9]+(-|$)|internvl|glm-4v|minicpm-v|molmo/i
-
-const blindToImages =
-  /deepseek|reasoner|gpt-oss|kimi|qwen[0-9.]*-?(coder|max|turbo|plus)|codestral|codellama|starcoder|granite-code|nemotron|command-r|embed|whisper/i
-
-export function supportsVision(model: string): boolean {
-  if (!model) return true
-  if (seesImages.test(model)) return true
-  return !blindToImages.test(model)
-}
-
-const preference = [
-  /claude-opus-5/i,
-  /claude-sonnet-5/i,
-  /gpt-5/i,
-  /gpt-oss-120b/i,
-  /qwen.*coder/i,
-  /llama-3\.3-70b/i,
-]
-
-export function pickDefaultModel(models: string[]): string {
-  for (const pattern of preference) {
-    const match = models.find((model) => pattern.test(model))
-    if (match) return match
-  }
-  return models[0] ?? ''
-}
+export { pickDefaultModel, supportsVision, usableForCode } from './models.ts'

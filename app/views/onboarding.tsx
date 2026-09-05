@@ -2,8 +2,8 @@
 
 import { useState, type ReactNode } from 'react'
 import { accounts as accountsApi, openExternal } from '@/app/lib/ipc'
-import { listModels, resolveEndpoint } from '@/app/lib/llm'
-import { findProvider, pickDefaultModel, providers } from '@/app/lib/providers'
+import { findProvider, providers } from '@/app/lib/providers'
+import { ModelSelect } from '@/app/ui/modelSelect'
 import { useStore } from '@/app/lib/state'
 import { Badge, Button, Field, Icon, IconButton, Input, Select, Spinner, cx } from '@/app/ui/primitives'
 import type { MessageKey } from '@/app/lib/i18n'
@@ -14,8 +14,6 @@ export function OnboardingView() {
   const store = useStore()
   const { settings, apiKey, t } = store
 
-  const [models, setModels] = useState<string[]>([])
-  const [loadingModels, setLoadingModels] = useState(false)
   const [signingIn, setSigningIn] = useState(false)
   const [useCookie, setUseCookie] = useState(false)
   const [cookie, setCookie] = useState('')
@@ -49,26 +47,7 @@ export function OnboardingView() {
     setOpened(steps.find((step, index) => index > at && !isDone(step)) ?? steps[at + 1] ?? '')
   }
 
-  const refreshModels = async () => {
-    setLoadingModels(true)
-    try {
-      const list = await listModels(
-        resolveEndpoint({
-          providerId: settings.providerId,
-          customBaseUrl: settings.customBaseUrl,
-          apiKey,
-          model: settings.model,
-          temperature: settings.temperature,
-        })
-      )
-      setModels(list)
-      if (!list.includes(settings.model)) await store.patchSettings({ model: pickDefaultModel(list) })
-    } catch (error) {
-      store.toast(error instanceof Error ? error.message : String(error), 'danger')
-    } finally {
-      setLoadingModels(false)
-    }
-  }
+
 
   const capture = async (run: () => Promise<{ accounts: unknown; activeId: string | null }>) => {
     try {
@@ -167,29 +146,10 @@ export function OnboardingView() {
             ) : null}
 
             <Field label={t('settings.model')}>
-              <div className="flex gap-2">
-                {models.length > 0 ? (
-                  <Select
-                    value={settings.model}
-                    onChange={(value) => void store.patchSettings({ model: value })}
-                    options={models.map((model) => ({ value: model, label: model }))}
-                  />
-                ) : (
-                  <Input
-                    value={settings.model}
-                    onChange={(value) => void store.patchSettings({ model: value })}
-                    mono
-                  />
-                )}
-
-                {loadingModels ? (
-                  <span className="flex size-8 items-center justify-center">
-                    <Spinner />
-                  </span>
-                ) : (
-                  <IconButton icon="refresh" title={t('settings.refresh')} onClick={() => void refreshModels()} />
-                )}
-              </div>
+              <ModelSelect
+                value={settings.model}
+                onChange={(model) => void store.patchSettings({ model })}
+              />
             </Field>
 
             <Button tone="primary" full disabled={!aiDone} onClick={advance}>

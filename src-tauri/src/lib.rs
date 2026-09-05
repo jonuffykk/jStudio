@@ -89,15 +89,18 @@ fn pluginsDir() -> Result<std::path::PathBuf, String> {
 }
 
 #[tauri::command]
-fn pluginStatus(state: tauri::State<AppState>) -> Value {
-    let installed = pluginsDir()
-        .ok()
-        .map(|dir| dir.join(PLUGIN_FILE).exists())
-        .unwrap_or(false);
+fn pluginStatus(app: AppHandle, state: tauri::State<AppState>) -> Value {
+    let file = pluginsDir().ok().map(|dir| dir.join(PLUGIN_FILE));
+    let source = file.as_ref().and_then(|path| std::fs::read_to_string(path).ok());
+    let installed = source.is_some();
+    let paired = source
+        .as_deref()
+        .is_some_and(|text| text.contains(&bridgeToken(&app)));
 
     let running = state.bridge.status();
     json!({
         "installed": installed,
+        "paired": paired,
         "bundledVersion": PLUGIN_VERSION,
         "runningVersion": running.get("pluginVersion").cloned().unwrap_or(Value::Null),
         "outdated": running
@@ -108,16 +111,72 @@ fn pluginStatus(state: tauri::State<AppState>) -> Value {
     })
 }
 
+fn bridgeToken(app: &AppHandle) -> String {
+    let stored = store::readJson(app, "bridge.json", json!({}));
+    if let Some(token) = stored.get("token").and_then(Value::as_str) {
+        if token.len() >= 32 {
+            return token.to_owned();
+        }
+    }
+
+    let token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+
+    let _ = store::writeJson(app, "bridge.json", &json!({ "token": token }));
+    token
+}
+
+/** Writes the bundled plugin whenever the copy on disk is missing, older or unpaired. */
+fn refreshPlugin(app: &AppHandle) -> Result<(), String> {
+    let dir = pluginsDir()?;
+    let target = dir.join(PLUGIN_FILE);
+    let wanted = PLUGIN_SOURCE.replace("__JSTUDIO_TOKEN__", &bridgeToken(app));
+
+    if std::fs::read_to_string(&target).is_ok_and(|current| current == wanted) {
+        return Ok(());
+    }
+    if !target.exists() {
+        return Ok(());
+    }
+
+    std::fs::write(&target, wanted).map_err(|error| format!("could not update the plugin: {error}"))
+}
+
 #[tauri::command]
-fn pluginInstall() -> Result<String, String> {
+fn pluginInstall(app: AppHandle) -> Result<String, String> {
     let dir = pluginsDir()?;
     std::fs::create_dir_all(&dir).map_err(|error| format!("Could not create {dir:?}: {error}"))?;
 
+    let source = PLUGIN_SOURCE.replace("__JSTUDIO_TOKEN__", &bridgeToken(&app));
     let target = dir.join(PLUGIN_FILE);
-    std::fs::write(&target, PLUGIN_SOURCE)
-        .map_err(|error| format!("Could not write the plugin: {error}"))?;
+    std::fs::write(&target, source).map_err(|error| format!("Could not write the plugin: {error}"))?;
     Ok(target.display().to_string())
 }
+
+#[tauri::command]
+fn usageLoad(app: AppHandle) -> Value {
+    store::loadUsage(&app)
+}
+
+#[tauri::command]
+fn usageSave(app: AppHandle, value: Value) -> Result<(), String> {
+    store::saveUsage(&app, value)
+}
+
+#[tauri::command]
+fn imageSave(app: AppHandle, dataUrl: String) -> Result<String, String> {
+    store::saveImage(&app, &dataUrl)
+}
+
+#[tauri::command]
+fn imageLoad(app: AppHandle, name: String) -> Option<String> {
+    store::loadImage(&app, &name)
+}
+
+#[tauri::command]
+fn conversationsClear(app: AppHandle) -> Result<(), String> {
+    store::clearConversations(&app)
+}
+
 
 #[tauri::command]
 fn settingsLoad(app: AppHandle) -> Value {
@@ -449,6 +508,11 @@ pub fn run() {
             pluginInstall,
             settingsLoad,
             settingsSave,
+            usageLoad,
+            usageSave,
+            imageSave,
+            imageLoad,
+            conversationsClear,
             accountsList,
             accountSignIn,
             accountSignInWithCookie,
@@ -504,7 +568,13 @@ pub fn run() {
                 let _ = window.set_focus();
             }
 
+            bridge.setToken(bridgeToken(app.handle()));
+
+            if let Err(error) = refreshPlugin(app.handle()) {
+                eprintln!("jStudio: the plugin could not be updated: {error}");
+            }
             bridge.attach(app.handle().clone());
+            store::sweepImages(app.handle());
             let served = bridge.clone();
 
             tauri::async_runtime::spawn(async move {

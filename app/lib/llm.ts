@@ -1,10 +1,22 @@
 import { net } from '@/app/lib/ipc'
-import { findProvider, supportsVision, usableForCode, type Provider, type ProviderId } from '@/app/lib/providers'
+import {
+  capabilityOf,
+  describeModel,
+  readModel,
+  supportsVision,
+  usableForCode,
+  type Capability,
+  type ModelInfo,
+} from './models.ts'
+import { findProvider, type Provider, type ProviderId } from '@/app/lib/providers'
 
 export type ToolDef = { name: string; description: string; parameters: Record<string, unknown> }
 export type ToolCall = { id: string; name: string; args: string }
 
 export type Effort = 'low' | 'medium' | 'high'
+
+/** Low enough that Luau comes out deterministic, high enough to keep prose alive. */
+export const TEMPERATURE = 0.2
 
 export type Message =
   | { role: 'system'; content: string }
@@ -14,6 +26,7 @@ export type Message =
 
 export type Delta =
   | { type: 'text'; text: string }
+  | { type: 'truncated' }
   | { type: 'reasoning'; text: string }
   | { type: 'notice'; text: string }
   | { type: 'tool'; index: number; id?: string; name?: string; args?: string }
@@ -26,6 +39,7 @@ export type Endpoint = {
   model: string
   temperature: number
   effort: Effort
+  capability?: Capability
 }
 
 export function resolveEndpoint(input: {
@@ -33,8 +47,8 @@ export function resolveEndpoint(input: {
   customBaseUrl: string
   apiKey: string
   model: string
-  temperature: number
   effort?: Effort
+  capability?: Capability
 }): Endpoint {
   const provider = findProvider(input.providerId)
   const baseUrl = (provider.id === 'custom' ? input.customBaseUrl : provider.baseUrl).replace(/\/+$/, '')
@@ -43,8 +57,9 @@ export function resolveEndpoint(input: {
     baseUrl,
     apiKey: input.apiKey,
     model: input.model,
-    temperature: input.temperature,
+    temperature: TEMPERATURE,
     effort: input.effort ?? 'medium',
+    capability: input.capability,
   }
 }
 
@@ -52,8 +67,6 @@ function splitDataUrl(value: string): { mediaType: string; data: string } | null
   const match = /^data:([^;]+);base64,(.+)$/.exec(value)
   return match?.[1] && match[2] ? { mediaType: match[1], data: match[2] } : null
 }
-
-const reasoningModel = /gpt-5|^o[134]|reasoner|thinking/i
 
 function authHeaders(endpoint: Endpoint): Record<string, string> {
   if (endpoint.provider.dialect === 'anthropic') {
@@ -92,48 +105,22 @@ export function describeError(error: unknown, provider: Provider): string {
   return `${provider.label} failed: ${raw}`
 }
 
-const freeModel = /:free|-free/i
+/** Reads the provider's own catalogue, with prices and context when it publishes them. */
+export async function listCatalog(endpoint: Endpoint): Promise<ModelInfo[]> {
+  const anthropic = endpoint.provider.dialect === 'anthropic'
+  const url = anthropic ? `${endpoint.baseUrl}/models?limit=1000` : `${endpoint.baseUrl}/models`
 
-export function isFreeModel(model: string): boolean {
-  return freeModel.test(model)
-}
-
-export function groupModels(models: string[]): { label: string; models: string[] }[] {
-  const groups = new Map<string, string[]>()
-
-  for (const model of models) {
-    const name = model.includes('/') ? (model.split('/')[0] ?? 'other') : model.split(/[-.]/)[0] ?? 'other'
-    const label = name.charAt(0).toUpperCase() + name.slice(1)
-    groups.set(label, [...(groups.get(label) ?? []), model])
-  }
-
-  return [...groups.entries()]
-    .map(([label, entries]) => ({ label, models: entries.sort((a, b) => a.localeCompare(b)) }))
-    .sort((left, right) => left.label.localeCompare(right.label))
-}
-
-export async function listModels(endpoint: Endpoint): Promise<string[]> {
-  if (endpoint.provider.dialect === 'anthropic') {
-    const response = await net(`${endpoint.baseUrl}/models?limit=100`, {
-      headers: authHeaders(endpoint),
-    }).catch(() => null)
-
-    if (!response?.ok) return endpoint.provider.fallbackModels
-    const body = (await response.json()) as { data?: { id: string }[] }
-    const ids = (body.data ?? []).map((entry) => entry.id)
-    return ids.length > 0 ? ids : endpoint.provider.fallbackModels
-  }
-
-  const response = await net(`${endpoint.baseUrl}/models`, { headers: authHeaders(endpoint) })
+  const response = await net(url, { headers: authHeaders(endpoint) }).catch(() => null)
+  if (!response) throw new Error(`Could not reach ${endpoint.provider.label}.`)
   if (!response.ok) throw new Error(`HTTP ${response.status} while listing models.`)
 
-  const body = (await response.json()) as { data?: { id: string }[] }
-  const ids = (body.data ?? [])
-    .map((entry) => entry.id)
-    .filter(usableForCode)
-    .sort((left, right) => left.localeCompare(right))
+  const body = (await response.json()) as { data?: unknown[] }
+  const listed = (body.data ?? [])
+    .map((entry) => readModel(entry as Parameters<typeof readModel>[0]))
+    .filter((entry): entry is ModelInfo => entry !== null && usableForCode(entry.id))
+    .sort((left, right) => left.id.localeCompare(right.id))
 
-  return ids.length > 0 ? ids : endpoint.provider.fallbackModels
+  return listed.length > 0 ? listed : endpoint.provider.fallbackModels.map(describeModel)
 }
 
 async function* frames(response: Response): AsyncGenerator<string> {
@@ -162,7 +149,12 @@ async function* frames(response: Response): AsyncGenerator<string> {
       }
     }
   } finally {
-    reader.releaseLock()
+    // A cancelled request drops the underlying resource; releasing it then throws.
+    try {
+      reader.releaseLock()
+    } catch {
+      /* the stream is already gone */
+    }
   }
 }
 
@@ -206,6 +198,52 @@ function dialectStream(
     : streamOpenAi(endpoint, messages, tools, signal)
 }
 
+const RETRIES = 2
+
+const retryable = /\b(429|500|502|503|504)\b|rate.?limit|overloaded|timeout|temporarily/i
+
+const wait = (ms: number, signal: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', stop)
+      resolve()
+    }, ms)
+    const stop = () => {
+      clearTimeout(timer)
+      reject(new Error('aborted'))
+    }
+    signal.addEventListener('abort', stop, { once: true })
+  })
+
+/** Counts the prompt exactly where the provider offers it, and returns null where it does not. */
+export async function countTokens(
+  endpoint: Endpoint,
+  messages: Message[],
+  tools: ToolDef[]
+): Promise<number | null> {
+  if (endpoint.provider.dialect !== 'anthropic' || !endpoint.apiKey) return null
+
+  try {
+    const { system, converted } = toAnthropic(messages)
+    const response = await net(`${endpoint.baseUrl}/messages/count_tokens`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders(endpoint) },
+      body: JSON.stringify({
+        model: endpoint.model,
+        ...(system ? { system } : {}),
+        messages: converted,
+        ...(tools.length > 0 ? { tools: anthropicTools(tools) } : {}),
+      }),
+    })
+    if (!response.ok) return null
+
+    const body = (await response.json()) as { input_tokens?: number }
+    return body.input_tokens ?? null
+  } catch {
+    return null
+  }
+}
+
 export async function* streamChat(
   endpoint: Endpoint,
   messages: Message[],
@@ -218,15 +256,28 @@ export async function* streamChat(
 
   if (blind) yield { type: 'notice', text: `${endpoint.model} does not read images. Sending the text alone.` }
 
-  try {
-    for await (const delta of dialectStream(endpoint, blind ? withoutImages(messages) : messages, tools, signal)) {
-      started = true
-      yield delta
+  const payload = blind ? withoutImages(messages) : messages
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      for await (const delta of dialectStream(endpoint, payload, tools, signal)) {
+        started = true
+        yield delta
+      }
+      return
+    } catch (error) {
+      if (signal.aborted) throw error
+      const raw = error instanceof Error ? error.message : String(error)
+
+      if (!started && attempt < RETRIES && retryable.test(raw)) {
+        const pause = 1200 * 2 ** attempt
+        yield { type: 'notice', text: `${endpoint.provider.label} is busy. Trying again in ${Math.round(pause / 1000)}s.` }
+        await wait(pause, signal)
+        continue
+      }
+      if (started || blind || !attached || !rejectsImages.test(raw)) throw error
+      break
     }
-    return
-  } catch (error) {
-    const raw = error instanceof Error ? error.message : String(error)
-    if (started || blind || !attached || !rejectsImages.test(raw)) throw error
   }
 
   yield { type: 'notice', text: `${endpoint.model} does not read images. Sent the text alone.` }
@@ -239,6 +290,7 @@ async function* streamOpenAi(
   tools: ToolDef[],
   signal: AbortSignal
 ): AsyncGenerator<Delta> {
+  const capability = endpoint.capability ?? capabilityOf(endpoint.model)
   const body = {
     model: endpoint.model,
     temperature: endpoint.temperature,
@@ -270,7 +322,9 @@ async function* streamOpenAi(
       }
       return { role: message.role, content: message.content }
     }),
-    ...(reasoningModel.test(endpoint.model) ? { reasoning_effort: endpoint.effort } : {}),
+    ...(capability.reasoning === 'effort'
+      ? { reasoning_effort: endpoint.effort, max_completion_tokens: capability.maxOutput }
+      : { max_tokens: capability.maxOutput }),
     ...(tools.length > 0
       ? {
           tools: tools.map((tool) => ({
@@ -291,17 +345,26 @@ async function* streamOpenAi(
   await ensureOk(response, endpoint.provider)
 
   let counted: { inputTokens: number; outputTokens: number } | null = null
+  let cut = false
 
   for await (const data of frames(response)) {
     if (data === '[DONE]') break
 
     let chunk: {
-      usage?: { prompt_tokens?: number; completion_tokens?: number }
+      usage?: {
+        prompt_tokens?: number
+        completion_tokens?: number
+        input_tokens?: number
+        output_tokens?: number
+      }
       choices?: {
+        finish_reason?: string | null
         delta?: {
           content?: string
           reasoning?: string
           reasoning_content?: string
+          thinking?: string
+          reasoning_details?: { text?: string; summary?: string }[]
           tool_calls?: { index: number; id?: string; function?: { name?: string; arguments?: string } }[]
         }
       }[]
@@ -313,16 +376,23 @@ async function* streamOpenAi(
     }
 
     if (chunk.usage) {
-      counted = {
-        inputTokens: chunk.usage.prompt_tokens ?? 0,
-        outputTokens: chunk.usage.completion_tokens ?? 0,
-      }
+      const input = chunk.usage.prompt_tokens ?? chunk.usage.input_tokens ?? 0
+      const output = chunk.usage.completion_tokens ?? chunk.usage.output_tokens ?? 0
+      if (input > 0 || output > 0) counted = { inputTokens: input, outputTokens: output }
     }
 
-    const delta = chunk.choices?.[0]?.delta
+    const choice = chunk.choices?.[0]
+    if (choice?.finish_reason === 'length') cut = true
+
+    const delta = choice?.delta
     if (!delta) continue
 
-    const reasoning = delta.reasoning ?? delta.reasoning_content
+    const reasoning =
+      delta.reasoning ??
+      delta.reasoning_content ??
+      delta.thinking ??
+      delta.reasoning_details?.map((entry) => entry.text ?? entry.summary ?? '').join('')
+
     if (reasoning) yield { type: 'reasoning', text: reasoning }
     if (delta.content) yield { type: 'text', text: delta.content }
 
@@ -338,14 +408,22 @@ async function* streamOpenAi(
   }
 
   if (counted) yield { type: 'usage', ...counted }
+  if (cut) yield { type: 'truncated' }
 }
 
-async function* streamAnthropic(
-  endpoint: Endpoint,
-  messages: Message[],
-  tools: ToolDef[],
-  signal: AbortSignal
-): AsyncGenerator<Delta> {
+function anthropicTools(tools: ToolDef[]): unknown[] {
+  return tools.map((tool, index) => ({
+    name: tool.name,
+    description: tool.description,
+    input_schema: tool.parameters,
+    ...(index === tools.length - 1 ? { cache_control: { type: 'ephemeral' } } : {}),
+  }))
+}
+
+function toAnthropic(messages: Message[]): {
+  system: { type: 'text'; text: string; cache_control: { type: 'ephemeral' } }[] | null
+  converted: { role: 'user' | 'assistant'; content: unknown }[]
+} {
   const system = messages
     .filter((message) => message.role === 'system')
     .map((message) => (message as { content: string }).content)
@@ -398,7 +476,24 @@ async function* streamAnthropic(
     converted.push({ role: message.role, content: message.content })
   }
 
-  const thinking = endpoint.effort === 'high'
+  return {
+    system: system ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] : null,
+    converted,
+  }
+}
+
+async function* streamAnthropic(
+  endpoint: Endpoint,
+  messages: Message[],
+  tools: ToolDef[],
+  signal: AbortSignal
+): AsyncGenerator<Delta> {
+  const { system, converted } = toAnthropic(messages)
+  const capability = endpoint.capability ?? capabilityOf(endpoint.model)
+
+  const budget = { low: 0, medium: 4_000, high: 12_000 }[endpoint.effort]
+  const thinking = capability.reasoning === 'budget' && budget > 0
+  const maxTokens = Math.max(capability.maxOutput, thinking ? budget + 4_000 : 0)
 
   const response = await net(`${endpoint.baseUrl}/messages`, {
     method: 'POST',
@@ -406,38 +501,42 @@ async function* streamAnthropic(
     headers: { 'Content-Type': 'application/json', ...authHeaders(endpoint) },
     body: JSON.stringify({
       model: endpoint.model,
-      max_tokens: 16000,
+      max_tokens: maxTokens,
       temperature: thinking ? 1 : endpoint.temperature,
       stream: true,
-      ...(thinking ? { thinking: { type: 'enabled', budget_tokens: 4000 } } : {}),
-      ...(system
-        ? { system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] }
-        : {}),
+      ...(thinking ? { thinking: { type: 'enabled', budget_tokens: budget } } : {}),
+      ...(system ? { system } : {}),
       messages: converted,
-      ...(tools.length > 0
-        ? {
-            tools: tools.map((tool) => ({
-              name: tool.name,
-              description: tool.description,
-              input_schema: tool.parameters,
-            })),
-          }
-        : {}),
+      ...(tools.length > 0 ? { tools: anthropicTools(tools) } : {}),
     }),
   })
   await ensureOk(response, endpoint.provider)
 
   let inputTokens = 0
   let outputTokens = 0
+  let cutShort = false
 
   for await (const data of frames(response)) {
     let event: {
       type?: string
       index?: number
       content_block?: { type?: string; id?: string; name?: string }
-      delta?: { type?: string; text?: string; thinking?: string; partial_json?: string }
-      message?: { usage?: { input_tokens?: number; output_tokens?: number } }
-      usage?: { output_tokens?: number }
+      delta?: {
+        type?: string
+        text?: string
+        thinking?: string
+        partial_json?: string
+        stop_reason?: string
+      }
+      message?: {
+        usage?: {
+          input_tokens?: number
+          output_tokens?: number
+          cache_read_input_tokens?: number
+          cache_creation_input_tokens?: number
+        }
+      }
+      usage?: { output_tokens?: number; input_tokens?: number }
       error?: { message?: string }
     }
     try {
@@ -450,11 +549,17 @@ async function* streamAnthropic(
       throw new Error(event.error?.message ?? 'Anthropic cut the stream short.')
     }
     if (event.type === 'message_start' && event.message?.usage) {
-      inputTokens = event.message.usage.input_tokens ?? 0
-      outputTokens = event.message.usage.output_tokens ?? 0
+      const usage = event.message.usage
+      inputTokens =
+        (usage.input_tokens ?? 0) +
+        (usage.cache_read_input_tokens ?? 0) +
+        (usage.cache_creation_input_tokens ?? 0)
+      outputTokens = usage.output_tokens ?? 0
     }
-    if (event.type === 'message_delta' && event.usage?.output_tokens !== undefined) {
-      outputTokens = event.usage.output_tokens
+    if (event.type === 'message_delta' && event.delta?.stop_reason === 'max_tokens') cutShort = true
+    if (event.type === 'message_delta' && event.usage) {
+      if (event.usage.output_tokens !== undefined) outputTokens = event.usage.output_tokens
+      if (event.usage.input_tokens !== undefined) inputTokens = Math.max(inputTokens, event.usage.input_tokens)
     }
     if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
       yield {
@@ -476,4 +581,5 @@ async function* streamAnthropic(
   }
 
   if (inputTokens > 0 || outputTokens > 0) yield { type: 'usage', inputTokens, outputTokens }
+  if (cutShort) yield { type: 'truncated' }
 }
