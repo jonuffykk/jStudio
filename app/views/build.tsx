@@ -1,278 +1,132 @@
 'use client'
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { basePrompt, builtinToolsSize, runAgent, toolDefinitionSize, type AgentEvent } from '@/app/lib/agent'
-import { applyAction, studioMcp } from '@/app/lib/apply'
-import { describeError, groupModels, isFreeModel, resolveEndpoint, streamChat, type Endpoint } from '@/app/lib/llm'
-import { spoof as spoofApi } from '@/app/lib/ipc'
-import { findProvider, supportsVision } from '@/app/lib/providers'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { applyAction, canApply as canApplyThrough } from '@/app/lib/apply'
+import { storeImage } from '@/app/lib/blobs'
 import { play } from '@/app/lib/host'
+import { describeError, resolveEndpoint } from '@/app/lib/llm'
+import { findProvider } from '@/app/lib/providers'
+import { promptParts } from '@/app/lib/prompt'
 import { useStore } from '@/app/lib/state'
-import {
-  spoofOptions,
-  type Action,
-  type AgentStep,
-  type ChatMessage,
-  type ChatUsage,
-  type Conversation,
-  type Skill,
-} from '@/app/lib/schemas'
-import {
-  Badge,
-  Button,
-  Confirm,
-  Dropdown,
-  EmptyState,
-  Icon,
-  IconButton,
-  Menu,
-  MenuItem,
-  Popover,
-  Ring,
-  Skeleton,
-  Spinner,
-  anchorFrom,
-  cx,
-  type Anchor,
-} from '@/app/ui/primitives'
+import { subagents } from '@/app/lib/subagents'
+import { slimDescription, slimSchema, studioTools } from '@/app/lib/tools'
+import type { Action, Conversation } from '@/app/lib/schemas'
 import type { MessageKey } from '@/app/lib/i18n'
+import { Confirm, EmptyState, Icon, Skeleton } from '@/app/ui/primitives'
+import { ApprovalCard, type ApprovalRequest } from '@/app/views/chat/approval'
+import { Composer } from '@/app/views/chat/composer'
+import { Interrupt } from '@/app/views/chat/interrupt'
+import { Message } from '@/app/views/chat/message'
+import { ChatSidebar } from '@/app/views/chat/sidebar'
+import { UsagePill, type Slice } from '@/app/views/chat/usagePill'
+import { advise, generateTitle, respoof, startAgent, summarise } from '@/app/views/chat/run'
+import { isRunning, newChatId, newSession, type Session } from '@/app/views/chat/session'
+import {
+  appendSegment,
+  attachmentsIn,
+  bubble,
+  noSpend,
+  type ActionState,
+  type Bubble,
+} from '@/app/views/chat/types'
 
-type Bubble = ChatMessage & { streaming?: boolean }
-type ActionState = 'pending' | 'applying' | 'applied' | 'failed'
+/**
+ * A plan or a question lives in its own field, so the assistant turn that raised
+ * it would reach the model empty. Give it words, and never send a blank turn.
+ */
+function asMessage(entry: Bubble): { role: 'user' | 'assistant'; content: string; images?: string[] } {
+  if (entry.role === 'user') return { role: 'user', content: entry.content, images: entry.images }
+  if (entry.content.trim()) return { role: 'assistant', content: entry.content }
 
-const newId = () => `chat${Date.now()}`
+  if (entry.plan) {
+    const steps = entry.plan.steps.map((step, index) => `${index + 1}. ${step}`).join('\n')
+    return { role: 'assistant', content: `Plan — ${entry.plan.title}\n${steps}` }
+  }
+
+  if (entry.questions.length > 0) {
+    return {
+      role: 'assistant',
+      content: entry.questions.map((question) => `Question: ${question.text}`).join('\n'),
+    }
+  }
+
+  return { role: 'assistant', content: '' }
+}
+
+/** A short line about who is on the other side, from the account and the profile. */
+function describePerson(): string {
+  const state = useStore.getState()
+  const account = state.activeAccount()
+  const { nickname, role } = state.settings.profile
+
+  const name = nickname.trim() || account?.name || ''
+  const trade = role === 'none' ? '' : state.t(`settings.role_${role}` as MessageKey)
+
+  return [name ? `Call them ${name}.` : '', trade ? `They describe themselves as: ${trade}.` : '']
+    .filter(Boolean)
+    .join(' ')
+}
+
 const MAX_IMAGES = 4
-const noSpend: ChatUsage = { input: 0, output: 0, calls: 0, lastInput: 0 }
-const DAY = 86_400_000
-
-const modeLabels: Record<'manual' | 'auto' | 'plan', MessageKey> = {
-  manual: 'settings.modeManual',
-  auto: 'settings.modeAuto',
-  plan: 'settings.modePlan',
-}
-
-const effortLabels: Record<'low' | 'medium' | 'high', MessageKey> = {
-  low: 'settings.effortLow',
-  medium: 'settings.effortMedium',
-  high: 'settings.effortHigh',
-}
-
-const commands: { name: string; hint: MessageKey }[] = [{ name: 'compress', hint: 'build.compressHint' }]
-
-const bubble = (role: 'user' | 'assistant', content: string, images: string[] = []): Bubble => ({
-  role,
-  content,
-  actions: [],
-  reasoning: '',
-  steps: [],
-  images,
-  at: Date.now(),
-  variants: [],
-  variant: 0,
-  artifacts: [],
-  questions: [],
-  resolved: false,
-  folded: false,
-  thinkMs: 0,
-  replyMs: 0,
-  plan: null,
-  memories: [],
-})
-
-const steps: [Intl.RelativeTimeFormatUnit, number][] = [
-  ['second', 60_000],
-  ['minute', 3_600_000],
-  ['hour', DAY],
-  ['day', DAY * 7],
-]
-
-function ago(value: number, language: string): string {
-  if (!value) return ''
-
-  const distance = value - Date.now()
-  const format = new Intl.RelativeTimeFormat(language, { numeric: 'auto' })
-  let previous = 1000
-
-  for (const [unit, limit] of steps) {
-    if (Math.abs(distance) < limit) return format.format(Math.round(distance / previous), unit)
-    previous = limit
-  }
-
-  return new Date(value).toLocaleDateString()
-}
-
-function compact(value: number): string {
-  const trim = (scaled: number) => String(Math.round(scaled * 10) / 10)
-
-  if (value >= 999_950) return `${trim(value / 1_000_000)}M`
-  if (value >= 1000) return `${trim(value / 1000)}k`
-  return String(value)
-}
-
-async function generateTitle(endpoint: Endpoint, prompt: string, onSpend?: Spend): Promise<string> {
-  const fallback = prompt.trim().replace(/\s+/g, ' ').slice(0, 24)
-
-  try {
-    let text = ''
-    const stream = streamChat(
-      { ...endpoint, effort: 'low', temperature: 0.3 },
-      [
-        {
-          role: 'system',
-          content:
-            'Name this request in two words, three at the very most, in the language it is written in. Name the subject, not the action. Answer with the name alone, no quotes and no period.',
-        },
-        { role: 'user', content: prompt.slice(0, 500) },
-      ],
-      [],
-      AbortSignal.timeout(45_000)
-    )
-
-    for await (const delta of stream) {
-      if (delta.type === 'usage') onSpend?.(delta.inputTokens, delta.outputTokens)
-      else if (delta.type === 'text') text += delta.text
-    }
-
-    const title = text
-      .replace(/<think>[\s\S]*?<\/think>/gi, '')
-      .split('\n')
-      .map((line) => line.replace(/^[-*\d.\s]+/, '').replace(/["'.`]/g, '').trim())
-      .filter(Boolean)
-      .pop()
-
-    return title && title.length > 2 ? title.slice(0, 24) : fallback
-  } catch {
-    return fallback
-  }
-}
-
-type Spend = (input: number, output: number) => void
-
-async function advise(
-  endpoint: Endpoint,
-  role: string,
-  question: string,
-  signal: AbortSignal,
-  onDelta?: (text: string) => void,
-  onSpend?: Spend
-): Promise<string> {
-  try {
-    let text = ''
-    const stream = streamChat(
-      endpoint,
-      [
-        {
-          role: 'system',
-          content: `${role}
-
-Answer the question you are given, in the language it is written in. At most six short lines, each one a concrete
-point. No preamble, no closing remark, no restating the question.`,
-        },
-        { role: 'user', content: question.slice(0, 4000) },
-      ],
-      [],
-      signal
-    )
-
-    for await (const delta of stream) {
-      if (delta.type === 'usage') onSpend?.(delta.inputTokens, delta.outputTokens)
-      if (delta.type !== 'text') continue
-      text += delta.text
-      onDelta?.(delta.text)
-    }
-    return text.trim()
-  } catch {
-    return ''
-  }
-}
-
-function complete(draft: string, name: string): string {
-  return draft.replace(/(?:^|\s)\/[a-z0-9-]*$/i, (match) => `${match.startsWith('/') ? '' : ' '}/${name} `)
-}
-
-function highlight(draft: string, skills: Skill[]): ReactNode[] {
-  const names = [...commands.map((entry) => entry.name), ...skills.map((entry) => entry.name)]
-  if (names.length === 0) return [draft]
-
-  const pattern = new RegExp(`/(?:${names.join('|')})\\b`, 'gi')
-  const parts: ReactNode[] = []
-  let cursor = 0
-
-  for (const match of draft.matchAll(pattern)) {
-    const at = match.index ?? 0
-    if (at > cursor) parts.push(draft.slice(cursor, at))
-    parts.push(
-      <span key={at} className="rounded bg-accent-soft">
-        {match[0]}
-      </span>
-    )
-    cursor = at + match[0].length
-  }
-
-  parts.push(draft.slice(cursor))
-  return parts
-}
-
-function readImage(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result))
-    reader.onerror = () => reject(new Error('Could not read that image.'))
-    reader.readAsDataURL(file)
-  })
-}
-
-function appendSegment(steps: AgentStep[], kind: 'thought' | 'text', text: string): AgentStep[] {
-  const last = steps[steps.length - 1]
-  if (last?.kind === kind) return [...steps.slice(0, -1), { ...last, text: last.text + text }]
-  return [...steps, { kind, id: '', status: 'done', name: '', target: '', source: '', text }]
-}
-
-function bucketOf(value: number): MessageKey {
-  const age = Date.now() - value
-  if (age < DAY) return 'chat.today'
-  if (age < DAY * 2) return 'chat.yesterday'
-  if (age < DAY * 7) return 'chat.week'
-  return 'chat.older'
-}
+const SAVE_EVERY = 1500
 
 export function BuildView() {
   const store = useStore()
-  const { settings, apiKey, nodes, truncated, status, mcp, conversations, t } = store
+  const { settings, apiKey, nodes, truncated, mcp, conversations, t } = store
 
-  const [conversationId, setConversationId] = useState(newId)
+  const [conversationId, setConversationId] = useState(newChatId)
   const [messages, setMessages] = useState<Bubble[]>([])
   const [draft, setDraft] = useState('')
   const [images, setImages] = useState<string[]>([])
-  const [busy, setBusy] = useState(false)
-  const [runningChat, setRunningChat] = useState<string | null>(null)
   const [usage, setUsage] = useState(noSpend)
-  const usageRef = useRef(usage)
   const [states, setStates] = useState<Record<string, ActionState>>({})
-  const [showArchived, setShowArchived] = useState(false)
-  const [modelOpen, setModelOpen] = useState(false)
+  const [approval, setApproval] = useState<ApprovalRequest | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [live, setLive] = useState<string[]>([])
   const [forking, setForking] = useState<number | null>(null)
-  const [compressing, setCompressing] = useState(false)
+  const [model, setModel] = useState('')
+  const [atBottom, setAtBottom] = useState(true)
 
-  const abort = useRef<AbortController | null>(null)
-  const conversationIdRef = useRef(conversationId)
   const bottom = useRef<HTMLDivElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
-  const fileInput = useRef<HTMLInputElement>(null)
-  const listRef = useRef<Bubble[]>([])
-  const runningRef = useRef(false)
-  const savedAt = useRef(0)
-  const runningIn = useRef<string | null>(null)
-  const parked = useRef(new Map<string, Bubble[]>())
-  const usages = useRef(new Map<string, ChatUsage>())
-  const known = useRef(new Set<string>())
-  const discarded = useRef(new Set<string>())
+  const sessions = useRef(new Map<string, Session>())
+  const current = useRef(conversationId)
+  const runRef = useRef<((id: string, history: Bubble[], skillIds: string[]) => Promise<void>) | null>(null)
 
+  /** The session of a chat, created on first sight. */
+  const sessionOf = useCallback((id: string): Session => {
+    const found = sessions.current.get(id)
+    if (found) return found
+
+    const fresh = newSession(id)
+    sessions.current.set(id, fresh)
+    return fresh
+  }, [])
+
+  const visible = useCallback((id: string) => id === current.current, [])
+
+  const show = useCallback(
+    (session: Session) => {
+      if (!visible(session.id)) return
+      setMessages(session.messages)
+      setUsage(session.usage)
+      setStates(session.states)
+      setApproval(session.approval)
+      setBusy(isRunning(session))
+    },
+    [visible]
+  )
+
+  const markLive = useCallback(() => {
+    setLive([...sessions.current.values()].filter(isRunning).map((session) => session.id))
+  }, [])
+
+  const placeReady = canApplyThrough(mcp)
   const provider = findProvider(settings.providerId)
-  const sighted = supportsVision(settings.model)
+  const activeModel = model || settings.model
+  const capability = store.modelInfo(activeModel)
+  const sighted = capability.vision
 
   const endpoint = useMemo(
     () =>
@@ -280,245 +134,363 @@ export function BuildView() {
         providerId: settings.providerId,
         customBaseUrl: settings.customBaseUrl,
         apiKey,
-        model: settings.model,
-        temperature: settings.temperature,
+        model: activeModel,
         effort: settings.effort,
+        capability,
       }),
-    [settings.providerId, settings.customBaseUrl, apiKey, settings.model, settings.temperature, settings.effort]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [settings.providerId, settings.customBaseUrl, apiKey, activeModel, settings.effort]
   )
-
-  useEffect(() => {
-    if (!sighted) setImages([])
-  }, [sighted])
-
-  const listOf = useCallback((id: string): Bubble[] => {
-    if (id === conversationIdRef.current) return listRef.current
-    return (
-      parked.current.get(id) ??
-      useStore.getState().conversations.find((entry) => entry.id === id)?.messages ??
-      []
-    )
-  }, [])
-
-  const commitTo = useCallback((id: string, next: Bubble[]) => {
-    if (id === conversationIdRef.current) {
-      listRef.current = next
-      setMessages(next)
-      return
-    }
-    parked.current.set(id, next)
-  }, [])
 
   const commit = useCallback(
-    (next: Bubble[]) => commitTo(conversationIdRef.current, next),
-    [commitTo]
-  )
-
-  const bank = useCallback((id: string, input: number, output: number) => {
-    if (input <= 0 && output <= 0) return
-
-    const banked = usages.current.get(id) ?? noSpend
-    const next = {
-      input: banked.input + input,
-      output: banked.output + output,
-      calls: banked.calls + 1,
-      lastInput: input > 0 ? input : banked.lastInput,
-    }
-    usages.current.set(id, next)
-
-    if (id === conversationIdRef.current) {
-      usageRef.current = next
-      setUsage(next)
-    }
-    useStore.getState().recordUsage(input, output)
-  }, [])
-
-  const persistTo = useCallback(
-    (id: string, title?: string) => {
-      if (discarded.current.has(id)) return
-
-      const list = listOf(id)
-      const existing = useStore.getState().conversations.find((entry) => entry.id === id)
-      const first = list.find((entry) => entry.role === 'user')?.content ?? 'Chat'
-
-      void useStore.getState().saveConversation({
-        id,
-        title: title ?? existing?.title ?? first.slice(0, 40),
-        updatedAt: Date.now(),
-        pinned: existing?.pinned ?? false,
-        archived: existing?.archived ?? false,
-        usage: usages.current.get(id) ?? existing?.usage ?? noSpend,
-        messages: list.map(({ streaming: _streaming, ...rest }) => rest),
-      })
+    (id: string, next: Bubble[]) => {
+      const session = sessionOf(id)
+      session.messages = next
+      if (visible(id)) setMessages(next)
     },
-    [listOf]
+    [sessionOf, visible]
   )
 
   const persist = useCallback(
-    (title?: string) => persistTo(conversationIdRef.current, title),
-    [persistTo]
+    (id: string, title?: string) => {
+      const session = sessionOf(id)
+      const saved = useStore.getState().conversations.find((entry) => entry.id === id)
+      const first = session.messages.find((entry) => entry.role === 'user')?.content ?? 'Chat'
+      if (title) session.title = title
+
+      void useStore.getState().saveConversation({
+        id,
+        title: title ?? (session.title || saved?.title || first.slice(0, 40)),
+        model: session.model,
+        updatedAt: Date.now(),
+        pinned: saved?.pinned ?? false,
+        archived: saved?.archived ?? false,
+        usage: session.usage,
+        messages: session.messages.map(({ streaming: _streaming, ...rest }) => rest),
+      })
+    },
+    [sessionOf]
   )
 
+  const bank = useCallback(
+    (
+      id: string,
+      model: string,
+      input: number,
+      output: number,
+      source: 'chat' | 'title' | 'agent' | 'summary' = 'chat'
+    ) => {
+      if (input <= 0 && output <= 0) return
+
+      const session = sessionOf(id)
+      session.usage = {
+        input: session.usage.input + input,
+        output: session.usage.output + output,
+        calls: session.usage.calls + (source === 'chat' ? 1 : 0),
+        lastInput: source === 'chat' && input > 0 ? input : session.usage.lastInput,
+      }
+
+      if (visible(id)) setUsage(session.usage)
+      useStore.getState().recordSpend(input, output, model, source)
+    },
+    [sessionOf, visible]
+  )
+
+  const setState = useCallback(
+    (id: string, key: string, value: ActionState) => {
+      const session = sessionOf(id)
+      session.states = { ...session.states, [key]: value }
+      if (visible(id)) setStates(session.states)
+    },
+    [sessionOf, visible]
+  )
+
+  const jump = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    stick.current = true
+    setAtBottom(true)
+    bottom.current?.scrollIntoView({ behavior })
+  }, [])
+
   useEffect(() => {
-    if (stick.current) bottom.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+    if (!stick.current) return
+    bottom.current?.scrollIntoView({ behavior: busy ? 'auto' : 'smooth' })
+  }, [messages, busy])
 
-  const switchTo = useCallback(
-    (id: string, messages: Bubble[] | null, spent?: ChatUsage) => {
-      const leaving = conversationIdRef.current
-      if (leaving === id) return
+  /** A gesture upwards releases the auto follow at once, even mid stream. */
+  useEffect(() => {
+    const node = scroller.current
+    if (!node) return
 
-      if (runningIn.current === leaving) parked.current.set(leaving, listRef.current)
-      usages.current.set(leaving, usageRef.current)
+    const release = (event: WheelEvent) => {
+      if (event.deltaY < 0 && stick.current) {
+        stick.current = false
+        setAtBottom(false)
+      }
+    }
 
-      conversationIdRef.current = id
+    let start = 0
+    const mark = (event: TouchEvent) => {
+      start = event.touches[0]?.clientY ?? 0
+    }
+    const drag = (event: TouchEvent) => {
+      if ((event.touches[0]?.clientY ?? 0) > start + 8 && stick.current) {
+        stick.current = false
+        setAtBottom(false)
+      }
+    }
+
+    node.addEventListener('wheel', release, { passive: true })
+    node.addEventListener('touchstart', mark, { passive: true })
+    node.addEventListener('touchmove', drag, { passive: true })
+
+    return () => {
+      node.removeEventListener('wheel', release)
+      node.removeEventListener('touchstart', mark)
+      node.removeEventListener('touchmove', drag)
+    }
+  }, [])
+
+  const openConversation = useCallback(
+    (conversation: Conversation | null) => {
+      const id = conversation?.id ?? newChatId()
+      const known = sessions.current.get(id)
+
+      const session =
+        known ??
+        Object.assign(newSession(id, conversation?.model ?? ''), {
+          messages: conversation?.messages ?? [],
+          usage: conversation?.usage ?? noSpend,
+          title: conversation?.title ?? '',
+        })
+
+      sessions.current.set(id, session)
+      current.current = id
+
       setConversationId(id)
-
-      const restored = parked.current.get(id) ?? messages ?? []
-      if (runningIn.current !== id) parked.current.delete(id)
-
-      listRef.current = restored
-      setMessages(restored)
-
-      const usage = usages.current.get(id) ?? spent ?? noSpend
-      usageRef.current = usage
-      setUsage(usage)
-
-      setBusy(runningIn.current === id)
-      setStates({})
+      setModel(session.model)
       setImages([])
+      show(session)
     },
-    []
-  )
-
-  const startNewChat = useCallback(() => {
-    switchTo(newId(), [])
-  }, [switchTo])
-
-  const openChat = useCallback(
-    (conversation: Conversation) => {
-      if (conversation.id === conversationIdRef.current) return
-      switchTo(conversation.id, conversation.messages, conversation.usage)
-      useStore.getState().visitChat(conversation.id)
-    },
-    [switchTo]
+    [show]
   )
 
   useEffect(() => {
-    const ids = new Set(conversations.map((entry) => entry.id))
-
-    const running = runningIn.current
-    if (running && known.current.has(running) && !ids.has(running)) {
-      discarded.current.add(running)
-      abort.current?.abort()
+    const onNew = () => openConversation(null)
+    const onOpen = (event: Event) => openConversation((event as CustomEvent<Conversation>).detail)
+    const onRenamed = (event: Event) => {
+      const session = sessions.current.get((event as CustomEvent<string>).detail)
+      if (session) session.title = ''
     }
-
-    known.current = ids
-
-    const live = new Set([...ids, conversationIdRef.current, ...(running ? [running] : [])])
-    for (const store of [parked.current, usages.current]) {
-      for (const id of store.keys()) if (!live.has(id)) store.delete(id)
-    }
-  }, [conversations])
-
-  useEffect(() => {
-    const onNew = () => startNewChat()
-    const onOpen = (event: Event) => openChat((event as CustomEvent<Conversation>).detail)
-    const onModel = () => setModelOpen(true)
 
     window.addEventListener('jstudio:newChat', onNew)
     window.addEventListener('jstudio:openChat', onOpen)
-    window.addEventListener('jstudio:pickModel', onModel)
+    window.addEventListener('jstudio:renamed', onRenamed)
     return () => {
       window.removeEventListener('jstudio:newChat', onNew)
       window.removeEventListener('jstudio:openChat', onOpen)
-      window.removeEventListener('jstudio:pickModel', onModel)
+      window.removeEventListener('jstudio:renamed', onRenamed)
     }
-  }, [startNewChat, openChat])
+  }, [openConversation])
 
-  const apply = useCallback(async (action: Action, key: string) => {
-    setStates((current) => ({ ...current, [key]: 'applying' }))
+  useEffect(() => {
+    const known = new Set(conversations.map((entry) => entry.id))
 
-    const state = useStore.getState()
-    const result = await applyAction(action, state.mcp, state.status.online)
-    setStates((current) => ({ ...current, [key]: result.ok ? 'applied' : 'failed' }))
-
-    play(result.ok ? 'done' : 'error', state.settings.sounds)
-    if (!result.ok) state.toast(result.message, 'danger')
-    await state.refreshTree()
-  }, [])
-
-  const addImages = async (files: FileList | File[]) => {
-    if (!sighted) {
-      store.toast(t('build.attachBlind', { model: settings.model }))
-      return
+    for (const [id, session] of sessions.current) {
+      if (known.has(id) || id === current.current) continue
+      session.controller?.abort()
+      sessions.current.delete(id)
     }
-    const picked = [...files].filter((file) => file.type.startsWith('image/')).slice(0, MAX_IMAGES)
-    const encoded = await Promise.all(picked.map(readImage))
-    setImages((current) => [...current, ...encoded].slice(0, MAX_IMAGES))
-  }
 
-  const run = useCallback(
-    async (history: Bubble[], forcedIds: string[], conversation?: string) => {
-      if (runningRef.current) {
-        useStore.getState().toast(t('build.oneAtATime'))
+    markLive()
+  }, [conversations, markLive])
+
+  const inverse = useCallback(
+    (action: Action): Action | null => {
+      if (action.kind === 'script') {
+        const before = nodes.find((node) => node.path === action.path)
+        return before?.source === undefined
+          ? { kind: 'delete', path: action.path, summary: `Undo ${action.path}` }
+          : { ...action, source: before.source, summary: `Restore ${action.path}` }
+      }
+      if (action.kind === 'instance') {
+        const exists = nodes.some((node) => node.path === action.path)
+        return exists ? null : { kind: 'delete', path: action.path, summary: `Undo ${action.path}` }
+      }
+      return null
+    },
+    [nodes]
+  )
+
+  const apply = useCallback(
+    async (id: string, action: Action, key: string) => {
+      setState(id, key, 'applying')
+      sessionOf(id).undo.set(key, inverse(action))
+
+      const state = useStore.getState()
+      const result = await applyAction(action, state.mcp)
+
+      setState(id, key, result.ok ? 'applied' : 'failed')
+      play(result.ok ? 'done' : 'error', state.settings.sounds)
+
+      if (!result.ok) state.toast(result.message, 'danger')
+      else if (result.skipped.length > 0) state.toast(result.skipped.join('; '), 'info')
+
+      await state.refreshTree()
+    },
+    [inverse, sessionOf, setState]
+  )
+
+  const applyAt = useCallback(
+    (index: number, action: Action, position: number) =>
+      void apply(current.current, action, `${index}:${position}`),
+    [apply]
+  )
+
+  const forkAt = useCallback((index: number) => setForking(index), [])
+
+  const regenerate = useCallback(() => {
+    const id = current.current
+    const list = sessionOf(id).messages
+    if (list[list.length - 1]?.role === 'assistant') void runRef.current?.(id, list.slice(0, -1), [])
+  }, [sessionOf])
+
+  const editAt = useCallback(
+    (index: number, text: string, images: string[]) => {
+      const id = current.current
+      const list = sessionOf(id).messages
+      const target = list[index]
+      if (!target) return
+
+      const variants = [...(target.variants.length ? target.variants : [target.content]), text]
+      void runRef.current?.(
+        id,
+        [
+          ...list.slice(0, index),
+          { ...target, content: text, images, at: Date.now(), variants, variant: variants.length - 1 },
+        ],
+        []
+      )
+    },
+    [sessionOf]
+  )
+
+  const revertAt = useCallback(
+    async (index: number, position: number) => {
+      const id = current.current
+      const key = `${index}:${position}`
+      const back = sessionOf(id).undo.get(key)
+      const state = useStore.getState()
+
+      if (!back) {
+        state.toast(state.t('build.nothingToRevert'))
         return
       }
-      const target = conversation ?? conversationIdRef.current
 
-      runningRef.current = true
-      runningIn.current = target
-      setRunningChat(target)
+      setState(id, key, 'applying')
+      const result = await applyAction(back, state.mcp)
 
-      commitTo(target, [...history, { ...bubble('assistant', ''), streaming: true }])
-      if (target === conversationIdRef.current) setBusy(true)
+      setState(id, key, result.ok ? 'pending' : 'applied')
+      if (!result.ok) state.toast(result.message, 'danger')
+      else sessionOf(id).undo.delete(key)
+
+      await state.refreshTree()
+    },
+    [sessionOf, setState]
+  )
+
+  const addImages = useCallback(
+    async (files: FileList | File[]) => {
+      if (!sighted) {
+        store.toast(t('build.attachBlind', { model: activeModel }))
+        return
+      }
+
+      const picked = [...files].filter((file) => file.type.startsWith('image/')).slice(0, MAX_IMAGES)
+      const encoded = await Promise.all(
+        picked.map(
+          (file) =>
+            new Promise<string>((resolve, reject) => {
+              const reader = new FileReader()
+              reader.onload = () => resolve(String(reader.result))
+              reader.onerror = () => reject(new Error('Could not read that image.'))
+              reader.readAsDataURL(file)
+            })
+        )
+      )
+
+      setImages((entries) => [...entries, ...encoded].slice(0, MAX_IMAGES))
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sighted, activeModel, t]
+  )
+
+  const run = useCallback(
+    async (id: string, history: Bubble[], skillIds: string[]) => {
+      const session = sessionOf(id)
+      if (isRunning(session)) return
 
       const controller = new AbortController()
-      abort.current = controller
+      session.controller = controller
+      session.model = session.model || model
+      markLive()
+
+      const chatModel = session.model || settings.model
+      const chatEndpoint = { ...endpoint, model: chatModel }
+
+      commit(id, [...history, { ...bubble('assistant', ''), streaming: true }])
+      if (visible(id)) setBusy(true)
 
       const startedAt = Date.now()
       let firstOutputAt = 0
 
       const update = (patch: (entry: Bubble) => Bubble) => {
-        const current = listOf(target)
-        const last = current[current.length - 1]
+        const list = session.messages
+        const last = list[list.length - 1]
         if (!last) return
-        commitTo(target, [...current.slice(0, -1), patch(last)])
+        commit(id, [...list.slice(0, -1), patch(last)])
 
-        if (Date.now() - savedAt.current > 1500) {
-          savedAt.current = Date.now()
-          persistTo(target)
+        if (Date.now() - session.savedAt > SAVE_EVERY) {
+          session.savedAt = Date.now()
+          persist(id)
         }
       }
 
+      const known = useStore.getState().conversations.some((entry) => entry.id === id)
+      const opener = history.find((entry) => entry.role === 'user')?.content ?? ''
+
+      if (!known && opener) {
+        void generateTitle(chatEndpoint, opener, (input, output) =>
+          bank(id, chatModel, input, output, 'title')
+        ).then((title) => persist(id, title))
+      }
+
       try {
-        const stream = runAgent({
-          endpoint,
-          history: history
-            .filter((entry) => !entry.folded)
-            .map(({ role, content, images: attached }) => ({ role, content, images: attached })),
+        const attached = history
+          .filter((entry) => entry.role === 'user')
+          .flatMap((entry) => attachmentsIn(entry.content))
+
+        const stream = startAgent({
+          endpoint: chatEndpoint,
+          history: history.filter((entry) => !entry.folded).map(asMessage).filter((entry) => entry.content),
           nodes,
           truncated,
-          skills: [],
-          forcedSkills: settings.skills.filter((entry) => forcedIds.includes(entry.id)),
-          offered: settings.skills.filter((entry) => entry.enabled && !forcedIds.includes(entry.id)),
+          attached,
+          selection: useStore.getState().selection,
+          skills: settings.skills.filter((entry) => skillIds.includes(entry.id)),
           plan: settings.mode === 'plan',
           instructions: settings.customInstructions,
+          person: describePerson(),
+          language: settings.language,
           memories: settings.memory.enabled ? settings.memory.items.map((entry) => entry.text) : [],
           references: settings.useChatHistory
             ? conversations
-                .filter((entry) => entry.id !== conversationId && entry.messages.length > 0)
+                .filter((entry) => entry.id !== id && entry.messages.length > 0)
                 .slice(0, 8)
                 .map((entry) => `${entry.title}: ${entry.messages[0]?.content.slice(0, 160) ?? ''}`)
             : [],
-          agents: settings.agents
-            .filter((agent) => agent.enabled)
-            .slice(0, 3)
-            .map((agent) => ({
-              name: agent.name,
-              model: agent.model || endpoint.model,
-              instructions: agent.instructions,
-            })),
+          agents: settings.subagents
+            ? subagents.map((agent) => ({ ...agent, model: endpoint.model, effort: settings.effort }))
+            : [],
           delegate: async (agent, task) => {
             let at = -1
             update((entry) => {
@@ -541,7 +513,7 @@ export function BuildView() {
             })
 
             const note = await advise(
-              { ...endpoint, model: agent.model },
+              { ...chatEndpoint, model: agent.model, effort: agent.effort },
               agent.instructions,
               task,
               controller.signal,
@@ -552,7 +524,7 @@ export function BuildView() {
                     index === at ? { ...step, text: step.text + delta } : step
                   ),
                 })),
-              (input, output) => bank(target, input, output)
+              (input, output) => bank(id, chatModel, input, output, 'agent')
             )
 
             if (!note) {
@@ -567,45 +539,51 @@ export function BuildView() {
             return note
           },
           mcp,
-          canEditPlace: !!studioMcp(mcp) || status.online,
-          maxTurns: settings.maxTurns,
-          signal: controller.signal,
-          assets: {
-            respoof: async (options) => {
-              const parsed = spoofOptions.parse({ ...settings.spoof, ...options })
-              store.resetSpoof()
-              useStore.setState({
-                spoofRunning: true,
-                spoofPaused: false,
-                spoofKind: parsed.assetKind,
-              })
+          assets: { respoof },
+          approve: async (note) => {
+            const state = useStore.getState()
+            if (state.settings.approval === 'auto' || state.settings.allowedTools.includes(note.name)) {
+              return 'once'
+            }
 
-              try {
-                const result = await spoofApi.start(parsed)
-                await store.refreshRuns()
-                return `${result.done} replaced, ${result.failed} failed.`
-              } finally {
-                useStore.setState({ spoofRunning: false, spoofPaused: false, spoofStatus: '' })
+            return new Promise((resolve) => {
+              const request = {
+                ...note,
+                resolve: (answer: 'once' | 'always' | 'deny') => {
+                  session.approval = null
+                  if (visible(id)) setApproval(null)
+                  if (answer === 'always') {
+                    void state.patchSettings({
+                      allowedTools: [...new Set([...state.settings.allowedTools, note.name])],
+                    })
+                  }
+                  resolve(answer)
+                },
               }
-            },
+
+              session.approval = request
+              if (visible(id)) setApproval(request)
+            })
           },
+          canEditPlace: placeReady,
+          signal: controller.signal,
         })
 
-        for await (const event of stream as AsyncGenerator<AgentEvent>) {
-          if (event.type === 'text' || event.type === 'toolStart') {
-            if (!firstOutputAt) firstOutputAt = Date.now()
+        for await (const event of stream) {
+          if ((event.type === 'text' || event.type === 'toolStart') && !firstOutputAt) {
+            firstOutputAt = Date.now()
           }
 
-          if (event.type === 'text')
+          if (event.type === 'text') {
             update((entry) => ({
               ...entry,
               content: entry.content + event.text,
               thinkMs: entry.thinkMs || firstOutputAt - startedAt,
               steps: appendSegment(entry.steps, 'text', event.text),
             }))
-          else if (event.type === 'reasoning')
+          } else if (event.type === 'reasoning') {
             update((entry) => ({ ...entry, steps: appendSegment(entry.steps, 'thought', event.text) }))
-          else if (event.type === 'toolStart')
+          } else if (event.type === 'toolStart') {
             update((entry) => ({
               ...entry,
               steps: [
@@ -621,27 +599,30 @@ export function BuildView() {
                 },
               ],
             }))
-          else if (event.type === 'toolEnd')
+          } else if (event.type === 'toolEnd') {
             update((entry) => ({
               ...entry,
               steps: entry.steps.map((step) =>
-                step.id === event.id ? { ...step, status: event.ok ? 'done' : 'failed' } : step
+                step.id === event.id
+                  ? { ...step, status: event.ok ? 'done' : 'failed', text: event.output }
+                  : step
               ),
             }))
-          else if (event.type === 'action') {
+          } else if (event.type === 'action') {
             update((entry) => ({ ...entry, actions: [...entry.actions, event.action] }))
+
             if (settings.mode === 'auto') {
-              const index = listOf(target).length - 1
-              const position = (listOf(target)[index]?.actions.length ?? 1) - 1
-              void apply(event.action, `${index}:${position}`)
+              const index = session.messages.length - 1
+              const position = (session.messages[index]?.actions.length ?? 1) - 1
+              void apply(id, event.action, `${index}:${position}`)
             }
-          }
-          else if (event.type === 'notice') store.toast(event.text)
-          else if (event.type === 'question')
+          } else if (event.type === 'notice') {
+            store.toast(event.text)
+          } else if (event.type === 'question') {
             update((entry) => ({ ...entry, questions: event.questions }))
-          else if (event.type === 'plan')
+          } else if (event.type === 'plan') {
             update((entry) => ({ ...entry, plan: { title: event.title, steps: event.steps } }))
-          else if (event.type === 'remember') {
+          } else if (event.type === 'remember') {
             for (const fact of event.facts) store.rememberFact(fact)
             update((entry) => ({
               ...entry,
@@ -658,15 +639,15 @@ export function BuildView() {
                 })),
               ],
             }))
+          } else if (event.type === 'usage') {
+            bank(id, chatModel, event.inputTokens, event.outputTokens)
+          } else if (event.type === 'done' && event.reason === 'limit') {
+            store.toast(t('build.turnsSpent'), 'info')
           }
-          else if (event.type === 'usage') bank(target, event.inputTokens, event.outputTokens)
         }
+
         play('done', settings.sounds)
-        if (
-          !document.hasFocus() ||
-          useStore.getState().view !== 'build' ||
-          target !== conversationIdRef.current
-        ) {
+        if (!document.hasFocus() || useStore.getState().view !== 'build' || !visible(id)) {
           store.notify(t('build.finished'))
         }
       } catch (error) {
@@ -685,274 +666,290 @@ export function BuildView() {
             step.status === 'running' ? { ...step, status: 'failed' as const } : step
           ),
         }))
-        if (target === conversationIdRef.current) setBusy(false)
-        abort.current = null
-        runningRef.current = false
-        runningIn.current = null
-        setRunningChat(null)
-      }
 
-      const dropped = discarded.current.delete(target)
-      if (dropped) {
-        parked.current.delete(target)
-        usages.current.delete(target)
-      } else {
-        const first = history.find((entry) => entry.role === 'user')?.content ?? 'Chat'
-        const existing = useStore.getState().conversations.find((entry) => entry.id === target)
-        persistTo(
-          target,
-          existing?.title ??
-            (await generateTitle(endpoint, first, (input, output) => bank(target, input, output)))
-        )
+        session.controller = null
+        session.approval = null
+        markLive()
+
+        if (visible(id)) {
+          setBusy(false)
+          setApproval(null)
+        }
+        persist(id)
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [endpoint, nodes, truncated, settings, mcp, status.online, provider, t, commitTo, listOf, apply, persistTo]
+    [endpoint, model, nodes, truncated, settings, mcp, placeReady, provider, t, commit, persist, apply, bank]
   )
 
-  const typing = /(?:^|\s)\/([a-z0-9-]*)$/i.exec(draft)?.[1]
-  const slashMatches =
-    typing === undefined
-      ? []
-      : settings.skills.filter((entry) => entry.name.toLowerCase().includes(typing.toLowerCase()))
-
-  const mentioned = settings.skills.filter((entry) =>
-    new RegExp(`(?:^|\\s)/${entry.name}\\b`, 'i').test(draft)
-  )
-
-  const commandMatches =
-    typing === undefined ? [] : commands.filter((entry) => entry.name.startsWith(typing.toLowerCase()))
-
-  const jump = () => {
-    stick.current = true
-    bottom.current?.scrollIntoView({ behavior: 'smooth' })
-  }
+  useEffect(() => {
+    runRef.current = run
+  }, [run])
 
   const compress = useCallback(
-    async (focus: string, label: string) => {
-      if (compressing || runningRef.current) return
-      setCompressing(true)
+    async (id: string, focus: string, label: string) => {
+      const session = sessionOf(id)
+      if (isRunning(session)) return
 
-      const transcript = listRef.current
+      const controller = new AbortController()
+      session.controller = controller
+      markLive()
+      if (visible(id)) setBusy(true)
+
+      const transcript = session.messages
         .map((entry) => `${entry.role === 'user' ? 'Person' : 'You'}: ${entry.content}`)
         .join('\n\n')
         .slice(-40_000)
 
-      commit([...listRef.current, bubble('user', label), { ...bubble('assistant', ''), streaming: true }])
+      commit(id, [...session.messages, bubble('user', label), { ...bubble('assistant', ''), streaming: true }])
 
       const update = (patch: (entry: Bubble) => Bubble) => {
-        const current = listRef.current
-        const last = current[current.length - 1]
-        if (!last) return
-        commit([...current.slice(0, -1), patch(last)])
+        const list = session.messages
+        const last = list[list.length - 1]
+        if (last) commit(id, [...list.slice(0, -1), patch(last)])
       }
 
       try {
-        const stream = streamChat(
+        await summarise(
           endpoint,
-          [
-            {
-              role: 'system',
-              content: [
-                'Summarise this conversation so it can carry on without the original messages.',
-                'Keep what was decided, what was built, the paths that were touched, the constraints and what is still open.',
-                'Write it as notes, in the language of the conversation. No greeting, no closing line.',
-                focus ? `Pay attention to: ${focus}` : '',
-              ]
-                .filter(Boolean)
-                .join(' '),
-            },
-            { role: 'user', content: transcript },
-          ],
-          [],
-          AbortSignal.timeout(120_000)
+          transcript,
+          focus,
+          controller.signal,
+          (text) =>
+            update((entry) => ({
+              ...entry,
+              content: entry.content + text,
+              steps: appendSegment(entry.steps, 'text', text),
+            })),
+          (input, output) => bank(id, session.model || settings.model, input, output, 'summary')
         )
 
-        for await (const delta of stream) {
-          if (delta.type !== 'text') continue
-          update((entry) => ({
-            ...entry,
-            content: entry.content + delta.text,
-            steps: appendSegment(entry.steps, 'text', delta.text),
-          }))
-        }
-
-        const current = listRef.current
-        const summary = current[current.length - 1]
-        const command = current[current.length - 2]
+        const list = session.messages
+        const summary = list[list.length - 1]
+        const command = list[list.length - 2]
 
         if (summary && command) {
-          commit([
-            ...current.slice(0, -2).map((entry) => ({ ...entry, folded: true })),
+          commit(id, [
+            ...list.slice(0, -2).map((entry) => ({ ...entry, folded: true })),
             command,
             { ...summary, streaming: false, at: Date.now() },
           ])
         }
 
         play('done', settings.sounds)
-        persist()
       } catch (error) {
         update((entry) => ({ ...entry, streaming: false, content: describeError(error, provider) }))
         play('error', settings.sounds)
       } finally {
-        setCompressing(false)
+        session.controller = null
+        markLive()
+        if (visible(id)) setBusy(false)
+        persist(id)
       }
     },
-    [endpoint, compressing, commit, persist, provider, settings.sounds]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [endpoint, commit, persist, provider, settings.sounds, settings.model, bank, sessionOf, visible]
   )
 
-  const command = (text: string): boolean => {
-    const match = /^\/compress\b\s*(.*)$/is.exec(text)
-    if (!match) return false
+  /** /status and /tools answer from what the app already knows, with no model call. */
+  const report = useCallback(
+    (id: string, command: string): boolean => {
+      const state = useStore.getState()
+      const list = sessionOf(id).messages
+      const usage = sessionOf(id).usage
 
-    void compress((match[1] ?? '').trim(), text)
-    return true
-  }
+      const modeLabel: MessageKey =
+        settings.mode === 'auto'
+          ? 'settings.modeAuto'
+          : settings.mode === 'plan'
+            ? 'settings.modePlan'
+            : 'settings.modeManual'
 
-  const elsewhere = runningChat !== null && runningChat !== conversationId
+      if (command === 'status') {
+        const turns = list.filter((entry) => entry.role === 'user').length
+        const tools = list.flatMap((entry) => entry.steps).filter((step) => step.kind === 'tool')
+        const names = [...new Set(tools.map((step) => step.name))].slice(0, 8)
+
+        const lines = [
+          `**${t('build.statusTitle')}**`,
+          '',
+          `- ${t('settings.model')}: \`${activeModel}\``,
+          `- ${t('settings.mode')}: ${t(modeLabel)}`,
+          `- ${t('build.context')}: ${usage.lastInput.toLocaleString()} / ${settings.contextLimit.toLocaleString()}`,
+          `- ${t('build.spentTotal')}: ${(usage.input + usage.output).toLocaleString()} · ${usage.calls} ${t('build.spentCalls')}`,
+          `- ${t('build.steps')}: ${tools.length}${names.length > 0 ? ` (${names.join(', ')})` : ''}`,
+          `- ${t('build.conversations')}: ${turns}`,
+          '',
+          `_${t('build.statusHint')}_`,
+        ]
+
+        commit(id, [...list, bubble('user', `/${command}`), bubble('assistant', lines.join('\n'))])
+        persist(id)
+        return true
+      }
+
+      if (command === 'tools') {
+        const lines = [
+          `**${t('settings.tools')}**`,
+          '',
+          ...studioTools.map((tool) => `- \`${tool.name}\` · jStudio`),
+          ...state.mcp.flatMap((entry) => [
+            '',
+            `**${entry.server.label}**${entry.error ? ` — ${entry.error}` : ''}`,
+            ...entry.tools.map((tool) => `- \`${tool.remoteName}\``),
+          ]),
+        ]
+
+        commit(id, [...list, bubble('user', `/${command}`), bubble('assistant', lines.join('\n'))])
+        persist(id)
+        return true
+      }
+
+      return false
+    },
+    [activeModel, settings.mode, settings.contextLimit, commit, persist, sessionOf, t]
+  )
 
   const send = useCallback(() => {
-    if (runningRef.current) {
-      useStore.getState().toast(t('build.oneAtATime'))
-      return
-    }
-
     const text = draft.trim()
     if (!text && images.length === 0) return
 
-    if (command(text)) {
+    const id = current.current
+    const session = sessionOf(id)
+
+    const compressing = /^\/compress\s*(.*)$/is.exec(text)
+    if (compressing) {
+      setDraft('')
+      void compress(id, (compressing[1] ?? '').trim(), text)
+      return
+    }
+
+    const local = /^\/(status|tools)\s*$/i.exec(text)?.[1]?.toLowerCase()
+    if (local && report(id, local)) {
       setDraft('')
       return
     }
 
-    const open = listRef.current.length - 1
-    const waiting = listRef.current[open]
-    if (waiting && !waiting.resolved && (waiting.plan || waiting.questions.length > 0)) {
-      commit(
-        listRef.current.map((entry, position) => (position === open ? { ...entry, resolved: true } : entry))
-      )
-    }
+    const held = session.messages
+    const open = held.length - 1
+    const waiting = held[open]
+    const base =
+      waiting && !waiting.resolved && (waiting.plan || waiting.questions.length > 0)
+        ? held.map((entry, index) => (index === open ? { ...entry, resolved: true } : entry))
+        : held
 
-    const payload = { text, images, forced: mentioned.map((entry) => entry.id) }
+    const mentioned = settings.skills.filter((entry) =>
+      new RegExp(`(?:^|\\s)/${entry.name}\\b`, 'i').test(text)
+    )
+
+    const pending = [...images]
     setDraft('')
     setImages([])
     play('send', settings.sounds)
-    jump()
+    jump('auto')
 
-    void run([...listRef.current, bubble('user', payload.text, payload.images)], payload.forced)
+    void Promise.all(pending.map(storeImage)).then((stored) => {
+      void run(id, [...base, bubble('user', text, stored)], mentioned.map((entry) => entry.id))
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, images, mentioned, run, settings.sounds])
-
-  const editMessage = (index: number, text: string) => {
-    const target = listRef.current[index]
-    if (!target) return
-
-    const variants = [...(target.variants.length ? target.variants : [target.content]), text]
-    const edited: Bubble = { ...target, content: text, at: Date.now(), variants, variant: variants.length - 1 }
-    void run([...listRef.current.slice(0, index), edited], [])
-  }
+  }, [draft, images, run, compress, commit, report, jump, settings.skills, settings.sounds, t])
 
   const answer = (text: string, index?: number) => {
-    const current =
+    const id = current.current
+    const held = sessionOf(id).messages
+    const base =
       index === undefined
-        ? listRef.current
-        : listRef.current.map((entry, position) =>
-            position === index ? { ...entry, resolved: true } : entry
-          )
+        ? held
+        : held.map((entry, position) => (position === index ? { ...entry, resolved: true } : entry))
 
-    void run([...current, bubble('user', text)], [])
-  }
-
-  const resolveAt = (index: number) => {
-    commit(listRef.current.map((entry, position) => (position === index ? { ...entry, resolved: true } : entry)))
-    persist()
-  }
-
-  const approvePlan = (index: number) => {
-    if (settings.mode === 'plan') void store.patchSettings({ mode: 'manual' })
-    answer(t('build.planApproved'), index)
-  }
-
-  const regenerate = () => {
-    const last = listRef.current[listRef.current.length - 1]
-    if (!last || last.role !== 'assistant') return
-    void run(listRef.current.slice(0, -1), [])
+    void run(id, [...base, bubble('user', text)], [])
   }
 
   const fork = (index: number) => {
-    const slice = listRef.current.slice(0, index + 1)
-    const id = newId()
+    const slice = sessionOf(current.current).messages.slice(0, index + 1)
+    const id = newChatId()
     const source = conversations.find((entry) => entry.id === conversationId)
 
     void store.saveConversation({
       id,
       title: t('build.forkOf', { title: source?.title ?? t('build.newChat') }).slice(0, 40),
+      model,
       updatedAt: Date.now(),
       pinned: false,
       archived: false,
       usage: noSpend,
       messages: slice.map(({ streaming: _streaming, ...rest }) => rest),
     })
-    switchTo(id, slice)
+
+    const session = Object.assign(newSession(id, model), { messages: slice })
+    sessions.current.set(id, session)
+    current.current = id
+
+    setConversationId(id)
+    show(session)
     store.toast(t('build.forked'), 'ok')
   }
 
-  const visible = conversations.filter((entry) => !entry.archived)
-  const pinned = visible.filter((entry) => entry.pinned)
-  const loose = visible.filter((entry) => !entry.pinned)
-  const archived = conversations.filter((entry) => entry.archived)
+  const slices: Slice[] = useMemo(() => {
+    const parts = promptParts({
+      nodes,
+      truncated,
+      attached: messages.flatMap((entry) => (entry.role === 'user' ? attachmentsIn(entry.content) : [])),
+      selection: store.selection,
+      skills: [],
+      studioMcp: placeReady,
+      plan: settings.mode === 'plan',
+      instructions: settings.customInstructions,
+      person: describePerson(),
+      memories: settings.memory.enabled ? settings.memory.items.map((entry) => entry.text) : [],
+      references: [],
+      agents: [],
+    })
 
-  const slices: Slice[] = [
-    {
-      label: t('build.sliceSystem'),
-      tokens: estimate(basePrompt),
-      className: 'bg-accent/40',
-    },
-    {
-      label: t('build.sliceMessages'),
-      tokens: messages
-        .filter((entry) => !entry.folded)
-        .reduce((sum, entry) => sum + estimate(entry.content), 0),
-      className: 'bg-accent',
-    },
-    {
-      label: t('build.slicePlace'),
-      tokens: nodes.reduce((sum, node) => sum + estimate(node.path + (node.source ?? '')), 0),
-      className: 'bg-accent/60',
-    },
-    {
-      label: t('build.sliceTools'),
-      tokens:
-        builtinToolsSize() +
-        mcp.reduce(
-          (sum, connection) =>
-            sum +
-            toolDefinitionSize(
-              connection.tools.map((tool) => ({
-                name: tool.name,
-                description: tool.description,
-                parameters: tool.inputSchema,
-              }))
-            ),
-          0
-        ),
-      className: 'bg-ok',
-    },
-    {
-      label: t('build.sliceSkills'),
-      tokens: settings.skills
-        .filter((entry) => entry.enabled)
-        .reduce((sum, entry) => sum + estimate(entry.instructions), 0),
-      className: 'bg-warn',
-    },
-    {
-      label: t('build.sliceMemory'),
-      tokens:
-        estimate(settings.customInstructions) +
-        settings.memory.items.reduce((sum, entry) => sum + estimate(entry.text), 0),
-      className: 'bg-danger/70',
-    },
-  ]
+    const tone: Record<string, string> = {
+      prompt: 'bg-accent/40',
+      place: 'bg-accent',
+      skills: 'bg-warn',
+      memory: 'bg-danger/70',
+    }
+
+    const labels: Record<string, MessageKey> = {
+      prompt: 'build.slicePrompt',
+      place: 'build.slicePlace',
+      skills: 'build.sliceSkills',
+      memory: 'build.sliceMemory',
+    }
+
+    return [
+      ...parts.map((part) => ({
+        key: labels[part.key] ?? 'build.slicePrompt',
+        chars: part.text.length,
+        className: tone[part.key] ?? 'bg-accent',
+      })),
+      {
+        key: 'build.sliceTools' as MessageKey,
+        chars: JSON.stringify([
+          ...studioTools,
+          ...mcp.flatMap((entry) =>
+            entry.tools.map((tool) => ({
+              name: tool.name,
+              description: slimDescription(tool.description),
+              parameters: slimSchema(tool.inputSchema),
+            }))
+          ),
+        ]).length,
+        className: 'bg-ok',
+      },
+      {
+        key: 'build.sliceMessages' as MessageKey,
+        chars: messages
+          .filter((entry) => !entry.folded)
+          .reduce((sum, entry) => sum + entry.content.length, 0),
+        className: 'bg-accent/70',
+      },
+    ]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes, truncated, messages, settings, mcp, placeReady])
 
   const last = messages[messages.length - 1]
   const pending =
@@ -960,94 +957,55 @@ export function BuildView() {
       ? { message: last, index: messages.length - 1 }
       : null
 
-  const buckets: { key: MessageKey; items: Conversation[] }[] = (
-    ['chat.today', 'chat.yesterday', 'chat.week', 'chat.older'] as MessageKey[]
-  ).map((key) => ({ key, items: loose.filter((entry) => bucketOf(entry.updatedAt) === key) }))
-
   return (
     <div className="flex h-full">
-      <aside className="flex w-[252px] shrink-0 flex-col border-r border-line bg-surface">
-        <header className="flex h-12 shrink-0 items-center justify-between border-b border-line pl-4 pr-2">
-          <h2 className="text-sm font-semibold">{t('build.conversations')}</h2>
-          <IconButton icon="plus" title={t('build.newChat')} onClick={startNewChat} />
-        </header>
-
-        <div className="min-h-0 flex-1 overflow-y-auto p-2">
-          {!store.ready ? (
-            <div className="space-y-1.5 p-1">
-              <Skeleton className="h-8" />
-              <Skeleton className="h-8" />
-              <Skeleton className="h-8" />
-            </div>
-          ) : (
-            <>
-              <ChatGroup
-                label={t('chat.pinned')}
-                items={pinned}
-                current={conversationId}
-                running={runningChat}
-                onOpen={openChat}
-                onNew={startNewChat}
-              />
-              {buckets.map((group) => (
-                <ChatGroup
-                  key={group.key}
-                  label={t(group.key)}
-                  items={group.items}
-                  current={conversationId}
-                  running={runningChat}
-                  onOpen={openChat}
-                  onNew={startNewChat}
-                />
-              ))}
-
-              {archived.length > 0 ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => setShowArchived(!showArchived)}
-                    className="flex w-full items-center gap-1.5 px-2 py-2 text-[11px] font-medium uppercase tracking-wide text-faint transition-colors hover:text-dim"
-                  >
-                    <Icon name="chevron" className={cx('size-3 transition-transform', showArchived && 'rotate-90')} />
-                    {t('chat.archived')}
-                  </button>
-                  {showArchived ? (
-                    <ChatGroup
-                      label=""
-                      items={archived}
-                      current={conversationId}
-                      running={runningChat}
-                      onOpen={openChat}
-                      onNew={startNewChat}
-                    />
-                  ) : null}
-                </>
-              ) : null}
-            </>
-          )}
-        </div>
-      </aside>
+      <ChatSidebar
+        current={conversationId}
+        running={live}
+        ready={store.ready}
+        onOpen={(conversation) => {
+          openConversation(conversation)
+          store.visitChat(conversation.id)
+        }}
+        onNew={() => openConversation(null)}
+      />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center justify-between gap-4 border-b border-line px-5">
           <h1 className="text-sm font-semibold">{t('nav.build')}</h1>
-          {status.online ? null : <span className="text-[13px] text-faint">{t('build.needsStudio')}</span>}
+          <div className="flex items-center gap-3">
+            {store.selection.length > 0 ? (
+              <span className="text-[13px] text-faint">
+                {t('build.selected', { count: store.selection.length })}
+              </span>
+            ) : null}
+            <PlaceStatus ready={placeReady} />
+          </div>
         </header>
 
         <div
           ref={scroller}
           onScroll={() => {
             const node = scroller.current
-            if (node) stick.current = node.scrollHeight - node.scrollTop - node.clientHeight < 120
+            if (!node) return
+
+            const near = node.scrollHeight - node.scrollTop - node.clientHeight < 120
+            stick.current = near
+            if (near !== atBottom) setAtBottom(near)
           }}
-          className="min-h-0 flex-1 overflow-y-auto"
+          className="relative min-h-0 flex-1 overflow-y-auto"
         >
           <div className="mx-auto flex max-w-3xl flex-col gap-7 px-6 py-8">
-            {messages.length === 0 ? (
+            {!store.ready ? (
+              <Skeleton className="h-24" />
+            ) : messages.length === 0 ? (
               <EmptyState icon="build" title={t('build.emptyTitle')} body={t('build.emptyBody')} />
             ) : (
               messages.map((message, index) => (
-                <Fragment key={index}>
+                <div
+                  key={index}
+                  className="flex flex-col gap-7 [contain-intrinsic-size:auto_160px] [content-visibility:auto]"
+                >
                   {message.folded && !messages[index + 1]?.folded ? (
                     <p className="flex items-center gap-3 text-[11px] uppercase tracking-wide text-faint">
                       <span className="h-px flex-1 bg-line" />
@@ -1057,19 +1015,19 @@ export function BuildView() {
                   ) : null}
 
                   <Message
-                  key={index}
-                  message={message}
-                  index={index}
-                  last={index === messages.length - 1}
-                  states={states}
-                  canApply={status.online}
-                  showReasoning={settings.showReasoning}
-                  onApply={(action, position) => void apply(action, `${index}:${position}`)}
-                  onEdit={(text) => editMessage(index, text)}
-                  onRegenerate={regenerate}
-                    onFork={() => setForking(index)}
+                    message={message}
+                    index={index}
+                    last={index === messages.length - 1}
+                    states={states}
+                    canApply={placeReady}
+                    showReasoning={settings.showReasoning}
+                    onApply={applyAt}
+                    onRevert={revertAt}
+                    onEdit={editAt}
+                    onRegenerate={regenerate}
+                    onFork={forkAt}
                   />
-                </Fragment>
+                </div>
               ))
             )}
 
@@ -1092,158 +1050,69 @@ export function BuildView() {
         </div>
 
         <footer
-          className="shrink-0 border-t border-line bg-surface px-5 py-3"
+          className="relative shrink-0 bg-bg px-5 pb-4 pt-2"
           onDragOver={(event) => event.preventDefault()}
           onDrop={(event) => {
             event.preventDefault()
             void addImages(event.dataTransfer.files)
           }}
         >
+          {!atBottom && messages.length > 0 ? (
+            <button
+              type="button"
+              title={t('build.toBottom')}
+              onClick={() => jump()}
+              className="riseIn absolute -top-5 left-1/2 z-20 flex size-9 -translate-x-1/2 items-center justify-center rounded-full border border-line bg-surface text-dim shadow-sm transition-colors hover:bg-raised hover:text-text"
+            >
+              <Icon name="chevron" className="size-4 rotate-90" />
+            </button>
+          ) : null}
+
           <div className="mx-auto max-w-3xl">
+            {approval ? <ApprovalCard request={approval} /> : null}
+
             {pending ? (
               <Interrupt
                 message={pending.message}
                 onAnswer={(text) => answer(text, pending.index)}
-                onApprove={() => approvePlan(pending.index)}
-                onDismiss={() => resolveAt(pending.index)}
+                onApprove={() => {
+                  if (settings.mode === 'plan') void store.patchSettings({ mode: 'manual' })
+                  answer(t('build.planApproved'), pending.index)
+                }}
+                onDismiss={() => {
+                  const id = current.current
+                  commit(
+                    id,
+                    sessionOf(id).messages.map((entry, position) =>
+                      position === pending.index ? { ...entry, resolved: true } : entry
+                    )
+                  )
+                  persist(id)
+                }}
               />
             ) : null}
 
-            <div className="relative rounded-[var(--radius-panel)] border border-line bg-bg transition-colors focus-within:border-focus">
-              <SlashMenu
-                open={slashMatches.length + commandMatches.length > 0}
-                skills={slashMatches}
-                commands={commandMatches}
-                onPick={(name) => setDraft(complete(draft, name))}
+            {pending || approval ? null : (
+              <Composer
+                draft={draft}
+                images={images}
+                busy={busy}
+                answering={false}
+                sighted={sighted}
+                model={activeModel}
+                usage={<UsagePill usage={usage} slices={slices} />}
+                onDraft={setDraft}
+                onDropImages={(files) => void addImages(files)}
+                onRemoveImage={(index) => setImages(images.filter((_, position) => position !== index))}
+                onSend={send}
+                onStop={() => sessionOf(current.current).controller?.abort()}
+                onModel={(picked) => {
+                  setModel(picked)
+                  sessionOf(current.current).model = picked
+                  if (messages.length === 0) void store.patchSettings({ model: picked })
+                }}
               />
-
-              {images.length > 0 ? (
-                <div className="flex flex-wrap gap-2 border-b border-line p-2">
-                  {images.map((image, index) => (
-                    <span key={index} className="relative">
-                      <img src={image} alt="" className="size-12 rounded-[var(--radius-control)] object-cover" />
-                      <button
-                        type="button"
-                        title={t('common.delete')}
-                        onClick={() => setImages(images.filter((_, position) => position !== index))}
-                        className="absolute -right-1 -top-1 flex size-4 items-center justify-center rounded-full border border-line bg-surface text-dim transition-colors hover:text-danger"
-                      >
-                        <Icon name="close" className="size-2.5" />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-
-              <div className="relative">
-                <div
-                  aria-hidden
-                  className="pointer-events-none absolute inset-0 max-h-56 min-h-20 overflow-hidden whitespace-pre-wrap break-words px-3.5 py-3 text-sm text-transparent"
-                >
-                  {highlight(draft, settings.skills)}
-                </div>
-
-                <textarea
-                value={draft}
-                rows={3}
-                placeholder={pending ? t('build.answerHint') : t('build.placeholder')}
-                onChange={(event) => setDraft(event.target.value)}
-                onPaste={(event) => {
-                  const files = [...event.clipboardData.files]
-                  if (files.length > 0) {
-                    event.preventDefault()
-                    void addImages(files)
-                  }
-                }}
-                onKeyDown={(event) => {
-                  if (event.key !== 'Enter') return
-                  const wants = settings.sendOnEnter ? !event.shiftKey : event.ctrlKey || event.metaKey
-                  if (!wants) return
-
-                  event.preventDefault()
-                  const first = commandMatches[0]?.name ?? slashMatches[0]?.name
-                  if (typing !== undefined && first) {
-                    setDraft(complete(draft, first))
-                    return
-                  }
-                  send()
-                }}
-                className="relative max-h-56 min-h-20 w-full resize-none bg-transparent px-3.5 py-3 text-sm outline-none placeholder:text-faint"
-                />
-              </div>
-
-              <div className="flex items-center gap-1 border-t border-line px-2 py-2">
-                <input
-                  ref={fileInput}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  hidden
-                  onChange={(event) => {
-                    if (event.target.files) void addImages(event.target.files)
-                    event.target.value = ''
-                  }}
-                />
-                <IconButton
-                  icon="image"
-                  title={sighted ? t('build.attach') : t('build.attachBlind', { model: settings.model })}
-                  disabled={!sighted}
-                  onClick={() => fileInput.current?.click()}
-                />
-
-                <ModelPicker open={modelOpen} onOpenChange={setModelOpen} />
-
-                <Dropdown label={t('settings.mode')} value={t(modeLabels[settings.mode])}>
-                  {(close) =>
-                    (['manual', 'auto', 'plan'] as const).map((mode) => (
-                      <MenuItem
-                        key={mode}
-                        active={settings.mode === mode}
-                        onClick={() => {
-                          void store.patchSettings({ mode })
-                          close()
-                        }}
-                      >
-                        {t(modeLabels[mode])}
-                      </MenuItem>
-                    ))
-                  }
-                </Dropdown>
-
-                <Dropdown label={t('settings.effort')} value={t(effortLabels[settings.effort])}>
-                  {(close) =>
-                    (['low', 'medium', 'high'] as const).map((effort) => (
-                      <MenuItem
-                        key={effort}
-                        active={settings.effort === effort}
-                        onClick={() => {
-                          void store.patchSettings({ effort })
-                          close()
-                        }}
-                      >
-                        {t(effortLabels[effort])}
-                      </MenuItem>
-                    ))
-                  }
-                </Dropdown>
-
-                <span className="ml-auto flex items-center gap-1">
-                  <UsagePill usage={usage} slices={slices} />
-                  <button
-                    type="button"
-                    title={busy ? t('build.stop') : elsewhere ? t('build.oneAtATime') : t('build.send')}
-                    disabled={!busy && (elsewhere || (!draft.trim() && images.length === 0))}
-                    onClick={() => (busy ? abort.current?.abort() : send())}
-                    className={cx(
-                      'flex size-8 items-center justify-center rounded-[var(--radius-control)] text-white transition-colors disabled:pointer-events-none disabled:opacity-40',
-                      busy ? 'bg-danger hover:bg-danger/85' : 'bg-accent hover:bg-accent-hover'
-                    )}
-                  >
-                    <Icon name={busy ? 'square' : 'chevron'} className={cx('size-4', !busy && '-rotate-90')} />
-                  </button>
-                </span>
-              </div>
-            </div>
+            )}
           </div>
         </footer>
       </div>
@@ -1251,962 +1120,21 @@ export function BuildView() {
   )
 }
 
-type Slice = { label: string; tokens: number; className: string }
+function PlaceStatus({ ready }: { ready: boolean }) {
+  const { plugin, t } = useStore()
 
-const estimate = (text: string) => Math.ceil(text.length / 4)
+  if (ready && plugin.installed && !plugin.outdated && plugin.paired) return null
 
-function UsagePill({ usage, slices }: { usage: ChatUsage; slices: Slice[] }) {
-  const { settings, t } = useStore()
-  const [open, setOpen] = useState(false)
-
-  const limit = settings.contextLimit
-  const used = Math.min(limit, slices.reduce((sum, slice) => sum + slice.tokens, 0))
-  const share = Math.round((used / limit) * 100)
-
-  const spent = usage.input + usage.output
-  const rows: Slice[] = [
-    ...slices.filter((slice) => slice.tokens > 0),
-    { label: t('build.free'), tokens: limit - used, className: 'bg-raised' },
-  ]
-
-  const spendRows = [
-    { label: t('build.spentIn'), value: usage.input },
-    { label: t('build.spentOut'), value: usage.output },
-    { label: t('build.spentTotal'), value: spent },
-    { label: t('build.spentCalls'), value: usage.calls },
-    { label: t('build.spentLast'), value: usage.lastInput },
-  ]
+  const message = !ready
+    ? t('build.needsStudio')
+    : !plugin.installed
+      ? t('build.needsPlugin')
+      : t('build.pluginStale')
 
   return (
-    <div className="relative">
-      <button
-        type="button"
-        title={
-          spent > 0
-            ? `${t('build.context')} ${share}% · ${t('build.spentTotal')} ${spent.toLocaleString()}`
-            : `${t('build.context')} ${share}%`
-        }
-        onClick={() => setOpen(!open)}
-        className="flex items-center rounded-[var(--radius-control)] px-1.5 py-1 transition-colors hover:bg-raised"
-      >
-        <Ring value={used} total={limit} label={spent > 0 ? compact(spent) : ''} />
-      </button>
-
-      <Popover open={open} onClose={() => setOpen(false)} align="right">
-        <div className="w-72 space-y-2 px-3 py-2.5">
-          <p className="flex items-baseline justify-between gap-4">
-            <span className="text-[11px] font-medium uppercase tracking-wide text-faint">
-              {t('build.context')}
-            </span>
-            <span className="font-mono text-xs text-dim">
-              {compact(used)} / {compact(limit)} ({share}%)
-            </span>
-          </p>
-
-          <div className="flex h-2 overflow-hidden rounded-full bg-raised">
-            {rows.map((slice) => (
-              <span
-                key={slice.label}
-                title={slice.label}
-                className={slice.className}
-                style={{ width: `${(slice.tokens / limit) * 100}%` }}
-              />
-            ))}
-          </div>
-
-          <ul className="space-y-1">
-            {rows.map((slice) => (
-              <li key={slice.label} className="flex items-center gap-2 text-xs">
-                <span className={cx('size-2 shrink-0 rounded-sm', slice.className)} />
-                <span className="min-w-0 flex-1 truncate text-dim">{slice.label}</span>
-                <span className="shrink-0 font-mono text-faint">{compact(slice.tokens)}</span>
-                <span className="w-9 shrink-0 text-right font-mono text-faint">
-                  {Math.round((slice.tokens / limit) * 100)}%
-                </span>
-              </li>
-            ))}
-          </ul>
-
-          <p className="pt-0.5 text-[11px] leading-snug text-faint">{t('build.contextNote')}</p>
-
-          {spent > 0 ? (
-            <div className="space-y-1 border-t border-line pt-2">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-faint">
-                {t('build.spent')}
-              </p>
-              {spendRows.map((row) => (
-                <p key={row.label} className="flex justify-between gap-6 text-xs">
-                  <span className="text-dim">{row.label}</span>
-                  <span className="font-mono text-faint">{row.value.toLocaleString()}</span>
-                </p>
-              ))}
-            </div>
-          ) : null}
-
-          {share >= 70 ? (
-            <p className="text-xs text-warn">
-              <span className="font-mono">/compress</span> · {t('build.compressHint')}
-            </p>
-          ) : null}
-        </div>
-      </Popover>
-    </div>
-  )
-}
-
-function ChatGroup({
-  label,
-  items,
-  current,
-  running,
-  onOpen,
-  onNew,
-}: {
-  label: string
-  items: Conversation[]
-  current: string
-  running: string | null
-  onOpen: (conversation: Conversation) => void
-  onNew: () => void
-}) {
-  if (items.length === 0) return null
-
-  return (
-    <>
-      {label ? (
-        <p className="px-2 pb-1 pt-3 text-[11px] font-medium uppercase tracking-wide text-faint">{label}</p>
-      ) : null}
-      <ul className="space-y-0.5">
-        {items.map((conversation) => (
-          <ChatRow
-            key={conversation.id}
-            conversation={conversation}
-            active={conversation.id === current}
-            running={conversation.id === running}
-            onOpen={() => onOpen(conversation)}
-            onNew={onNew}
-          />
-        ))}
-      </ul>
-    </>
-  )
-}
-
-function ChatRow({
-  conversation,
-  active,
-  running,
-  onOpen,
-  onNew,
-}: {
-  conversation: Conversation
-  active: boolean
-  running: boolean
-  onOpen: () => void
-  onNew: () => void
-}) {
-  const store = useStore()
-  const { t } = store
-  const [at, setAt] = useState<Anchor | null>(null)
-  const [renaming, setRenaming] = useState(false)
-  const [confirming, setConfirming] = useState(false)
-  const [title, setTitle] = useState(conversation.title)
-
-  const save = (patch: Partial<Conversation>) => void store.saveConversation({ ...conversation, ...patch })
-
-  if (renaming) {
-    return (
-      <li>
-        <input
-          autoFocus
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          onBlur={() => setRenaming(false)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && title.trim()) {
-              save({ title: title.trim() })
-              setRenaming(false)
-            }
-            if (event.key === 'Escape') setRenaming(false)
-          }}
-          className="w-full rounded-[var(--radius-control)] border border-line bg-bg px-2 py-1.5 text-[13px] outline-none"
-        />
-      </li>
-    )
-  }
-
-  return (
-    <li
-      className={cx(
-        'group relative rounded-[var(--radius-control)] transition-colors',
-        active ? 'bg-accent-soft' : 'hover:bg-raised'
-      )}
-    >
-      <button
-        type="button"
-        onClick={onOpen}
-        className={cx(
-          'flex w-full items-center gap-1.5 truncate rounded-[var(--radius-control)] py-2 pl-2.5 pr-9 text-left text-[13px] transition-colors',
-          active ? 'text-accent' : 'text-dim group-hover:text-text'
-        )}
-      >
-        {running ? (
-          <Spinner className="size-3 shrink-0" />
-        ) : conversation.pinned ? (
-          <Icon name="pin" className="size-3 shrink-0" />
-        ) : null}
-        <span className="truncate">{conversation.title}</span>
-      </button>
-
-      <span
-        className={cx(
-          'absolute right-1 top-1/2 -translate-y-1/2 transition-opacity',
-          at ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-        )}
-      >
-        <IconButton
-          icon="menu"
-          tone="plain"
-          size="sm"
-          title={t('build.rename')}
-          onClick={(event) => setAt(at ? null : anchorFrom(event))}
-        />
-      </span>
-
-      <Menu at={at} onClose={() => setAt(null)}>
-        <MenuItem
-          icon="edit"
-          onClick={() => {
-            setRenaming(true)
-            setAt(null)
-          }}
-        >
-          {t('build.rename')}
-        </MenuItem>
-        <MenuItem
-          icon={conversation.pinned ? 'unpin' : 'pin'}
-          onClick={() => {
-            save({ pinned: !conversation.pinned })
-            setAt(null)
-          }}
-        >
-          {conversation.pinned ? t('chat.unpin') : t('chat.pin')}
-        </MenuItem>
-        <MenuItem
-          icon="archive"
-          onClick={() => {
-            save({ archived: !conversation.archived })
-            setAt(null)
-          }}
-        >
-          {conversation.archived ? t('chat.unarchive') : t('chat.archive')}
-        </MenuItem>
-        <MenuItem
-          icon="trash"
-          tone="danger"
-          onClick={() => {
-            setAt(null)
-            setConfirming(true)
-          }}
-        >
-          {t('common.delete')}
-        </MenuItem>
-      </Menu>
-
-      <Confirm
-        open={confirming}
-        title={`${t('common.delete')} · ${conversation.title}`}
-        body={t('common.confirmDelete')}
-        confirmLabel={t('common.delete')}
-        cancelLabel={t('common.cancel')}
-        onCancel={() => setConfirming(false)}
-        onConfirm={() => {
-          setConfirming(false)
-          void store.deleteConversation(conversation.id)
-          if (active) onNew()
-        }}
-      />
-    </li>
-  )
-}
-
-function SlashMenu({
-  open,
-  skills,
-  commands: list,
-  onPick,
-}: {
-  open: boolean
-  skills: Skill[]
-  commands: { name: string; hint: MessageKey }[]
-  onPick: (name: string) => void
-}) {
-  const { t } = useStore()
-  if (!open) return null
-
-  return (
-    <div className="absolute bottom-full left-0 z-30 mb-2 w-96 overflow-hidden rounded-[var(--radius-panel)] border border-line bg-surface p-1.5">
-      {list.map((entry) => (
-        <MenuItem key={entry.name} icon="plan" onClick={() => onPick(entry.name)}>
-          <span className="font-mono">/{entry.name}</span>
-          <span className="ml-2 text-xs text-faint">{t(entry.hint)}</span>
-        </MenuItem>
-      ))}
-
-      {skills.slice(0, 6).map((entry) => (
-        <MenuItem key={entry.id} icon="spark" onClick={() => onPick(entry.name)}>
-          <span className="font-mono">/{entry.name}</span>
-          <span className="ml-2 truncate text-xs text-faint">{entry.description}</span>
-        </MenuItem>
-      ))}
-
-      {skills.length + list.length === 0 ? (
-        <p className="px-2.5 py-2 text-[13px] text-faint">{t('build.slashEmpty')}</p>
-      ) : null}
-    </div>
-  )
-}
-
-function ModelPicker({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const store = useStore()
-  const { settings, models, t } = store
-  const [loading, setLoading] = useState(false)
-
-  const list = models[settings.providerId] ?? []
-
-  const toggle = () => {
-    const next = !open
-    onOpenChange(next)
-    if (!next || list.length > 0) return
-
-    setLoading(true)
-    void store.loadModels().finally(() => setLoading(false))
-  }
-
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        title="Ctrl+M"
-        onClick={toggle}
-        className="flex max-w-44 items-center gap-1.5 rounded-[var(--radius-control)] px-2 py-1 font-mono text-xs text-dim transition-colors hover:bg-raised hover:text-text"
-      >
-        <span className="truncate">{settings.model || t('build.model')}</span>
-        <Icon name="chevron" className="size-3 rotate-90" />
-      </button>
-
-      <Popover open={open} onClose={() => onOpenChange(false)}>
-        <div className="max-h-80 overflow-y-auto">
-          {loading ? (
-            <div className="space-y-1.5 p-1.5">
-              <Skeleton className="h-7" />
-              <Skeleton className="h-7" />
-              <Skeleton className="h-7" />
-            </div>
-          ) : list.length === 0 ? (
-            <MenuItem active onClick={() => onOpenChange(false)}>
-              <span className="font-mono text-xs">{settings.model}</span>
-            </MenuItem>
-          ) : (
-            groupModels(list).map((group) => (
-              <div key={group.label}>
-                <p className="px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide text-faint">
-                  {group.label}
-                </p>
-                {group.models.map((model) => (
-                  <MenuItem
-                    key={model}
-                    active={model === settings.model}
-                    onClick={() => {
-                      void store.patchSettings({ model })
-                      onOpenChange(false)
-                    }}
-                  >
-                    <span className="font-mono text-xs">{model}</span>
-                    {isFreeModel(model) ? <span className="ml-1 text-ok">· {t('settings.free')}</span> : null}
-                  </MenuItem>
-                ))}
-              </div>
-            ))
-          )}
-        </div>
-      </Popover>
-    </div>
-  )
-}
-
-const markdownClass =
-  'max-w-none text-sm leading-relaxed [&_a]:text-accent [&_code]:rounded [&_code]:bg-raised [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[13px] [&_h1]:mt-4 [&_h1]:text-base [&_h1]:font-semibold [&_h2]:mt-4 [&_h2]:text-sm [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:text-sm [&_h3]:font-semibold [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-[var(--radius-control)] [&_pre]:bg-raised [&_pre]:p-3 [&_pre_code]:bg-transparent [&_strong]:font-semibold [&_table]:my-2 [&_td]:border [&_td]:border-line [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-line [&_th]:px-2 [&_th]:py-1 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5'
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${Math.max(ms, 0)}ms`
-  const seconds = ms / 1000
-  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`
-  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`
-}
-
-function textOf(node: ReactNode): string {
-  if (node === null || node === undefined || typeof node === 'boolean') return ''
-  if (typeof node === 'string' || typeof node === 'number') return String(node)
-  if (Array.isArray(node)) return node.map(textOf).join('')
-  const element = node as { props?: { children?: ReactNode } }
-  return element.props ? textOf(element.props.children) : ''
-}
-
-function CodeBlock({ children }: { children?: ReactNode }) {
-  const { t } = useStore()
-  const [copied, setCopied] = useState(false)
-  const code = textOf(children).replace(/\n$/, '')
-
-  return (
-    <div className="group/code relative">
-      <pre>{children}</pre>
-      <button
-        type="button"
-        title={copied ? t('build.copied') : t('build.copy')}
-        onClick={() => {
-          void navigator.clipboard.writeText(code)
-          setCopied(true)
-          setTimeout(() => setCopied(false), 1400)
-        }}
-        className={cx(
-          'absolute right-2 top-2 flex h-7 items-center gap-1.5 rounded-[var(--radius-control)] border border-line bg-surface px-2 text-xs transition-opacity',
-          copied ? 'text-ok opacity-100' : 'text-dim opacity-0 group-hover/code:opacity-100 hover:text-text'
-        )}
-      >
-        <Icon name={copied ? 'check' : 'copy'} className="size-3.5" />
-        {copied ? t('build.copied') : t('build.copy')}
-      </button>
-    </div>
-  )
-}
-
-const markdownComponents = { pre: CodeBlock }
-
-type Block =
-  | { kind: 'activity'; steps: AgentStep[] }
-  | { kind: 'text'; text: string }
-  | { kind: 'artifact'; step: AgentStep }
-  | { kind: 'memory'; facts: string[] }
-
-function Live() {
-  const { t } = useStore()
-
-  return (
-    <div className="flex items-center gap-2 text-[13px]">
-      <Spinner className="size-3.5" />
-      <span className="liveText">{t('build.working')}</span>
-    </div>
-  )
-}
-
-function Timeline({ message, allowed }: { message: Bubble; allowed: boolean }) {
-  const steps = allowed ? message.steps : message.steps.filter((step) => step.kind !== 'thought')
-  const legacy = allowed ? message.reasoning : ''
-
-  const blocks: Block[] = []
-  for (const step of steps) {
-    const last = blocks[blocks.length - 1]
-    if (step.kind === 'artifact') {
-      blocks.push({ kind: 'artifact', step })
-    } else if (step.kind === 'memory') {
-      if (last?.kind === 'memory') last.facts.push(step.text)
-      else blocks.push({ kind: 'memory', facts: [step.text] })
-    } else if (step.kind === 'text') {
-      if (last?.kind === 'text') last.text += step.text
-      else blocks.push({ kind: 'text', text: step.text })
-    } else if (last?.kind === 'activity') {
-      last.steps.push(step)
-    } else {
-      blocks.push({ kind: 'activity', steps: [step] })
-    }
-  }
-
-  const wrote = blocks.some((block) => block.kind === 'text')
-  const firstActivity = blocks.findIndex((block) => block.kind === 'activity')
-
-  if (blocks.length === 0 && !legacy && !message.content) return message.streaming ? <Live /> : null
-
-  return (
-    <>
-      {legacy ? <ActivityBlock steps={[]} legacy={legacy} live={false} /> : null}
-
-      {blocks.map((block, index) => {
-        const live = !!message.streaming && index === blocks.length - 1
-
-        if (block.kind === 'text') {
-          return (
-            <div key={index} data-selectable className={markdownClass}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{block.text}</ReactMarkdown>
-            </div>
-          )
-        }
-
-        if (block.kind === 'memory') return <Saved key={index} facts={block.facts} />
-        if (block.kind === 'artifact') return <Artifact key={index} step={block.step} live={live} />
-        return (
-          <ActivityBlock
-            key={index}
-            steps={block.steps}
-            legacy=""
-            live={live}
-            elapsed={index === firstActivity ? message.thinkMs : 0}
-          />
-        )
-      })}
-
-      {!wrote && message.content ? (
-        <div data-selectable className={markdownClass}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{message.content}</ReactMarkdown>
-        </div>
-      ) : null}
-    </>
-  )
-}
-
-function ActivityBlock({
-  steps,
-  legacy,
-  live,
-  elapsed = 0,
-}: {
-  steps: AgentStep[]
-  legacy: string
-  live: boolean
-  elapsed?: number
-}) {
-  const { t } = useStore()
-  const [open, setOpen] = useState<boolean | null>(null)
-
-  const tools = steps.filter((step) => step.kind === 'tool').length
-  const running = steps.some((step) => step.status === 'running')
-  const busy = live || running
-  const expanded = open ?? busy
-
-  return (
-    <div className="overflow-hidden rounded-[var(--radius-control)] border border-line bg-surface">
-      <button
-        type="button"
-        onClick={() => setOpen(!expanded)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-[13px] text-faint transition-colors hover:bg-raised hover:text-dim"
-      >
-        {busy ? <Spinner className="size-3.5" /> : <Icon name="spark" className="size-3.5" />}
-        <span className={cx(busy && 'liveText')}>
-          {running ? t('build.running') : busy ? t('build.thinking') : t('build.reasoning')}
-        </span>
-        {tools > 0 ? (
-          <span className="text-xs">
-            · {tools} {tools === 1 ? t('build.step') : t('build.steps')}
-          </span>
-        ) : null}
-        {!busy && elapsed > 0 ? <span className="text-xs">· {formatDuration(elapsed)}</span> : null}
-        <Icon name="chevron" className={cx('ml-auto size-3.5 transition-transform', expanded && 'rotate-90')} />
-      </button>
-
-      {expanded ? (
-        <div className="space-y-2.5 border-t border-line px-3 py-3">
-          {legacy ? (
-            <div data-selectable className={cx(markdownClass, 'text-[13px] text-dim')}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{legacy}</ReactMarkdown>
-            </div>
-          ) : null}
-
-          {steps.map((step, index) =>
-            step.kind === 'thought' ? (
-              <div key={index} data-selectable className={cx(markdownClass, 'text-[13px] text-dim')}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{step.text}</ReactMarkdown>
-              </div>
-            ) : (
-              <div
-                key={index}
-                className="flex items-center gap-2 rounded-[var(--radius-control)] bg-raised px-2.5 py-1.5 text-xs"
-              >
-                {step.status === 'running' ? (
-                  <Spinner className="size-3" />
-                ) : (
-                  <Icon
-                    name={step.status === 'failed' ? 'close' : 'check'}
-                    className={cx('size-3', step.status === 'failed' ? 'text-danger' : 'text-ok')}
-                  />
-                )}
-                <span className="font-mono text-dim">{step.name}</span>
-                {step.target ? <span className="truncate text-faint">{step.target}</span> : null}
-                {step.source ? <span className="ml-auto shrink-0 text-faint">{step.source}</span> : null}
-              </div>
-            )
-          )}
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
-function Message({
-  message,
-  index,
-  last,
-  states,
-  canApply,
-  showReasoning,
-  onApply,
-  onEdit,
-  onRegenerate,
-  onFork,
-}: {
-  message: Bubble
-  index: number
-  last: boolean
-  states: Record<string, ActionState>
-  canApply: boolean
-  showReasoning: boolean
-  onApply: (action: Action, position: number) => void
-  onEdit: (text: string) => void
-  onRegenerate: () => void
-  onFork: () => void
-}) {
-  const { t } = useStore()
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(message.content)
-  const [copied, setCopied] = useState(false)
-
-  const copy = async () => {
-    await navigator.clipboard.writeText(message.content)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
-  }
-
-  if (message.role === 'user') {
-    return (
-      <div className="group flex flex-col items-end gap-2">
-        {message.images.length > 0 ? (
-          <div className="flex gap-2">
-            {message.images.map((image, position) => (
-              <img key={position} src={image} alt="" className="size-20 rounded-[var(--radius-control)] object-cover" />
-            ))}
-          </div>
-        ) : null}
-
-        {editing ? (
-          <div className="w-full space-y-2">
-            <textarea
-              autoFocus
-              value={draft}
-              rows={3}
-              onChange={(event) => setDraft(event.target.value)}
-              className="w-full resize-none rounded-[var(--radius-panel)] border border-line bg-bg px-4 py-2.5 text-sm outline-none focus:border-focus"
-            />
-            <div className="flex justify-end gap-2">
-              <Button size="sm" tone="ghost" onClick={() => setEditing(false)}>
-                {t('common.cancel')}
-              </Button>
-              <Button
-                size="sm"
-                tone="primary"
-                onClick={() => {
-                  setEditing(false)
-                  onEdit(draft.trim())
-                }}
-              >
-                {t('build.send')}
-              </Button>
-            </div>
-          </div>
-        ) : message.content ? (
-          <p
-            data-selectable
-            className="max-w-[85%] whitespace-pre-wrap rounded-[var(--radius-panel)] bg-accent px-4 py-2.5 text-sm text-white"
-          >
-            {message.content}
-          </p>
-        ) : null}
-
-        <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-          <IconButton size="sm" icon="edit" title={t('build.edit')} onClick={() => setEditing(true)} />
-          <IconButton
-            size="sm"
-            icon="copy"
-            title={copied ? t('build.copied') : t('build.copy')}
-            onClick={() => void copy()}
-          />
-          <IconButton size="sm" icon="fork" title={t('build.fork')} onClick={onFork} />
-          <Stamp at={message.at} />
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="group space-y-3">
-      <Timeline message={message} allowed={showReasoning} />
-
-      {message.actions.map((action, position) => (
-        <ProposalCard
-          key={`${action.path}:${position}`}
-          action={action}
-          state={states[`${index}:${position}`] ?? 'pending'}
-          onApply={() => onApply(action, position)}
-          canApply={canApply}
-        />
-      ))}
-
-      {message.streaming ? null : (
-        <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-          <IconButton
-            size="sm"
-            icon="copy"
-            title={copied ? t('build.copied') : t('build.copy')}
-            onClick={() => void copy()}
-          />
-          {last ? (
-            <IconButton size="sm" icon="refresh" title={t('build.regenerate')} onClick={onRegenerate} />
-          ) : null}
-          <IconButton size="sm" icon="fork" title={t('build.fork')} onClick={onFork} />
-          {message.replyMs > 0 ? (
-            <span className="ml-1 text-xs text-faint" title={t('build.elapsed')}>
-              {formatDuration(message.replyMs)}
-            </span>
-          ) : null}
-          <Stamp at={message.at} />
-        </div>
-      )}
-    </div>
-  )
-}
-
-function ProposalCard({
-  action,
-  state,
-  onApply,
-  canApply,
-}: {
-  action: Action
-  state: ActionState
-  onApply: () => void
-  canApply: boolean
-}) {
-  const { t } = useStore()
-  const [open, setOpen] = useState(false)
-  const isScript = action.kind === 'script'
-
-  return (
-    <article className="overflow-hidden rounded-[var(--radius-panel)] border border-line bg-surface transition-colors hover:border-focus">
-      <header className="flex items-center gap-3 px-4 py-3">
-        <span className="flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-control)] bg-raised text-accent">
-          <Icon name={action.kind === 'delete' ? 'trash' : isScript ? 'build' : 'spark'} className="size-4" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <p className="truncate font-mono text-[13px]">{action.path}</p>
-          <p className="truncate text-xs text-dim">{action.summary}</p>
-        </div>
-
-        {state === 'applied' ? (
-          <Badge tone="ok">{t('build.applied')}</Badge>
-        ) : state === 'failed' ? (
-          <Badge tone="danger">{t('build.failed')}</Badge>
-        ) : (
-          <div className="flex items-center gap-1">
-            {isScript ? (
-              <IconButton
-                icon="chevron"
-                title={open ? t('build.hideCode') : t('build.viewCode')}
-                onClick={() => setOpen(!open)}
-              />
-            ) : null}
-            <Button
-              size="sm"
-              tone={action.kind === 'delete' ? 'danger' : 'primary'}
-              disabled={!canApply || state === 'applying'}
-              onClick={onApply}
-            >
-              {state === 'applying' ? <Spinner /> : t('build.apply')}
-            </Button>
-          </div>
-        )}
-      </header>
-
-      {isScript && open ? (
-        <pre
-          data-selectable
-          className="max-h-96 overflow-auto border-t border-line bg-bg p-4 font-mono text-[12.5px] leading-relaxed"
-        >
-          {action.source}
-        </pre>
-      ) : null}
-    </article>
-  )
-}
-
-function Stamp({ at }: { at: number }) {
-  const language = useStore((state) => state.settings.language)
-  if (!at) return null
-
-  return (
-    <span className="ml-1 text-[11px] text-faint" title={new Date(at).toLocaleString()}>
-      {ago(at, language)}
+    <span className="flex items-center gap-1.5 text-[13px] text-faint">
+      <Icon name="plugin" className="size-3.5" />
+      {message}
     </span>
-  )
-}
-
-function Interrupt({
-  message,
-  onAnswer,
-  onApprove,
-  onDismiss,
-}: {
-  message: Bubble
-  onAnswer: (text: string) => void
-  onApprove: () => void
-  onDismiss: () => void
-}) {
-  const { t } = useStore()
-  const [at, setAt] = useState(0)
-  const [answers, setAnswers] = useState<string[]>(() => message.questions.map(() => ''))
-
-  const questions = message.questions
-  const question = questions[at]
-
-  const pick = (option: string) => {
-    const next = answers.map((entry, index) => (index === at ? option : entry))
-    setAnswers(next)
-
-    if (at < questions.length - 1) {
-      setAt(at + 1)
-      return
-    }
-
-    onAnswer(
-      questions.map((entry, index) => `${entry.text}\n${next[index]?.trim() || '—'}`).join('\n\n')
-    )
-  }
-
-  return (
-    <div className="mb-2 overflow-hidden rounded-[var(--radius-panel)] border border-line bg-surface">
-      <header className="flex items-center gap-3 px-3.5 py-2.5">
-        <p className="min-w-0 flex-1 text-[13px] font-medium">
-          {message.plan ? message.plan.title : (question?.text ?? '')}
-        </p>
-
-        {questions.length > 1 ? (
-          <span className="flex shrink-0 items-center gap-1 text-[11px] text-faint">
-            <IconButton
-              size="sm"
-              tone="plain"
-              icon="back"
-              title={t('build.previous')}
-              disabled={at === 0}
-              onClick={() => setAt(at - 1)}
-            />
-            {at + 1}/{questions.length}
-            <IconButton
-              size="sm"
-              tone="plain"
-              icon="chevron"
-              title={t('build.next')}
-              disabled={at === questions.length - 1}
-              onClick={() => setAt(at + 1)}
-            />
-          </span>
-        ) : null}
-
-        <IconButton size="sm" tone="plain" icon="close" title={t('build.skip')} onClick={onDismiss} />
-      </header>
-
-      {message.plan ? (
-        <>
-          <ol data-selectable className="divide-y divide-line border-t border-line">
-            {message.plan.steps.map((step, index) => (
-              <li key={index} className="flex items-start gap-3 px-3.5 py-2 text-[13px]">
-                <span className="w-4 shrink-0 text-right text-[11px] text-faint">{index + 1}</span>
-                <span className="min-w-0 flex-1 text-dim">{step}</span>
-              </li>
-            ))}
-          </ol>
-
-          <footer className="flex items-center justify-between gap-3 border-t border-line px-3.5 py-2">
-            <span className="text-xs text-faint">{t('build.approveHint')}</span>
-            <Button size="sm" tone="primary" onClick={onApprove}>
-              {t('build.approvePlan')}
-            </Button>
-          </footer>
-        </>
-      ) : (
-        <ul className="divide-y divide-line border-t border-line">
-          {(question?.options ?? []).map((option, index) => (
-            <li key={option}>
-              <button
-                type="button"
-                onClick={() => pick(option)}
-                className="group flex w-full items-center gap-3 px-3.5 py-2 text-left text-[13px] transition-colors hover:bg-raised"
-              >
-                <span className="w-4 shrink-0 text-right text-[11px] text-faint">{index + 1}</span>
-                <span className="min-w-0 flex-1">{option}</span>
-                <Icon
-                  name="chevron"
-                  className="size-3.5 shrink-0 text-faint opacity-0 transition-opacity group-hover:opacity-100"
-                />
-              </button>
-            </li>
-          ))}
-
-          <li className="flex items-center gap-3 px-3.5 py-2 text-[13px] text-faint">
-            <Icon name="edit" className="size-3.5 shrink-0" />
-            <span className="min-w-0 flex-1">{t('build.answerHint')}</span>
-            <button
-              type="button"
-              onClick={onDismiss}
-              className="shrink-0 rounded-[var(--radius-control)] px-2 py-1 text-xs transition-colors hover:bg-raised hover:text-text"
-            >
-              {t('build.skip')}
-            </button>
-          </li>
-        </ul>
-      )}
-    </div>
-  )
-}
-
-function Saved({ facts }: { facts: string[] }) {
-  const { t } = useStore()
-
-  return (
-    <div className="flex items-start gap-2 rounded-[var(--radius-control)] border border-line bg-surface px-2.5 py-1.5 text-xs">
-      <Icon name="memory" className="mt-px size-3.5 shrink-0 text-accent" />
-      <span className="shrink-0 text-dim">{t('build.saved')}</span>
-      <span className="min-w-0 flex-1 text-faint">{facts.join(' · ')}</span>
-    </div>
-  )
-}
-
-function Artifact({ step, live }: { step: AgentStep; live: boolean }) {
-  const { t } = useStore()
-  const [open, setOpen] = useState<boolean | null>(null)
-  const expanded = open ?? live
-
-  return (
-    <div className="overflow-hidden rounded-[var(--radius-control)] border border-line bg-surface">
-      <button
-        type="button"
-        onClick={() => setOpen(!expanded)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-[13px] text-faint transition-colors hover:bg-raised hover:text-dim"
-      >
-        {live ? <Spinner className="size-3.5" /> : <Icon name="agent" className="size-3.5 text-accent" />}
-        <span className={cx('font-medium text-dim', live && 'liveText')}>{step.name}</span>
-        <span className="truncate text-xs">{step.source}</span>
-        <Icon name="chevron" className={cx('ml-auto size-3.5 transition-transform', expanded && 'rotate-90')} />
-      </button>
-
-      {expanded ? (
-        <div className="space-y-2 border-t border-line px-3 py-2.5">
-          {step.target ? <p className="text-xs text-faint">{step.target}</p> : null}
-          {step.text ? (
-            <div data-selectable className={cx(markdownClass, 'text-[13px] text-dim')}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{step.text}</ReactMarkdown>
-            </div>
-          ) : (
-            <p className="text-[13px] text-faint">{t('build.working')}</p>
-          )}
-        </div>
-      ) : null}
-    </div>
   )
 }

@@ -106,6 +106,7 @@ pub struct Bridge {
     work: Arc<Notify>,
     app: Arc<Mutex<Option<AppHandle>>>,
     scanTx: Arc<broadcast::Sender<Value>>,
+    token: Arc<Mutex<String>>,
 }
 
 impl Default for Bridge {
@@ -123,7 +124,23 @@ impl Bridge {
             work: Arc::default(),
             app: Arc::default(),
             scanTx: Arc::new(broadcast::channel(256).0),
+            token: Arc::default(),
         }
+    }
+
+    pub fn setToken(&self, token: String) {
+        *self.token.lock().unwrap() = token;
+    }
+
+    fn authorized(&self, headers: &HeaderMap) -> bool {
+        if headers.contains_key("origin") {
+            return false;
+        }
+        let expected = self.token.lock().unwrap().clone();
+        headers
+            .get("x-jstudio-token")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| !expected.is_empty() && value == expected)
     }
 
     pub fn subscribeScan(&self) -> broadcast::Receiver<Value> {
@@ -279,11 +296,12 @@ impl Bridge {
     }
 }
 
-fn pluginOnly(headers: &HeaderMap) -> Result<(), StatusCode> {
-    if headers.get("x-jstudio").is_none() || headers.contains_key("origin") {
-        return Err(StatusCode::FORBIDDEN);
+fn pluginOnly(bridge: &Bridge, headers: &HeaderMap) -> Result<(), StatusCode> {
+    if bridge.authorized(headers) {
+        Ok(())
+    } else {
+        Err(StatusCode::FORBIDDEN)
     }
-    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -308,7 +326,7 @@ async fn hello(
     headers: HeaderMap,
     Json(body): Json<Hello>,
 ) -> Result<Json<Value>, StatusCode> {
-    pluginOnly(&headers)?;
+    pluginOnly(&bridge, &headers)?;
     {
         let mut inner = bridge.inner.lock().unwrap();
         inner.placeId = body.placeId;
@@ -327,7 +345,7 @@ async fn goodbye(
     State(bridge): State<Bridge>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, StatusCode> {
-    pluginOnly(&headers)?;
+    pluginOnly(&bridge, &headers)?;
     {
         let mut inner = bridge.inner.lock().unwrap();
         inner.lastSeenAt = None;
@@ -338,7 +356,7 @@ async fn goodbye(
 }
 
 async fn poll(State(bridge): State<Bridge>, headers: HeaderMap) -> Result<Json<Value>, StatusCode> {
-    pluginOnly(&headers)?;
+    pluginOnly(&bridge, &headers)?;
     bridge.touch();
 
     if let Some(work) = bridge.takeWork() {
@@ -367,7 +385,7 @@ async fn pushTree(
     headers: HeaderMap,
     Json(body): Json<TreePush>,
 ) -> Result<Json<Value>, StatusCode> {
-    pluginOnly(&headers)?;
+    pluginOnly(&bridge, &headers)?;
     bridge.touch();
 
     let count = body.nodes.len();
@@ -386,7 +404,7 @@ async fn reportResult(
     headers: HeaderMap,
     Json(body): Json<JobResult>,
 ) -> Result<Json<Value>, StatusCode> {
-    pluginOnly(&headers)?;
+    pluginOnly(&bridge, &headers)?;
     bridge.touch();
     bridge.recordResult(body);
     Ok(Json(json!({ "ok": true })))
@@ -406,7 +424,7 @@ async fn reportScan(
     headers: HeaderMap,
     Json(body): Json<ScanBatch>,
 ) -> Result<Json<Value>, StatusCode> {
-    pluginOnly(&headers)?;
+    pluginOnly(&bridge, &headers)?;
     bridge.touch();
 
     let payload = json!({ "status": body.status, "results": body.results });
@@ -427,7 +445,7 @@ async fn reportReplace(
     headers: HeaderMap,
     Json(body): Json<ReplaceReport>,
 ) -> Result<Json<Value>, StatusCode> {
-    pluginOnly(&headers)?;
+    pluginOnly(&bridge, &headers)?;
     bridge.touch();
     bridge.emit(
         "studio:replace",
@@ -441,6 +459,8 @@ async fn reportReplace(
 struct SelectionReport {
     #[serde(default)]
     count: u32,
+    #[serde(default)]
+    paths: Vec<String>,
 }
 
 async fn reportSelection(
@@ -448,10 +468,11 @@ async fn reportSelection(
     headers: HeaderMap,
     Json(body): Json<SelectionReport>,
 ) -> Result<Json<Value>, StatusCode> {
-    pluginOnly(&headers)?;
+    pluginOnly(&bridge, &headers)?;
     bridge.touch();
     bridge.inner.lock().unwrap().selectionCount = body.count;
-    bridge.emit("studio:selection", json!({ "count": body.count }));
+    let paths: Vec<String> = body.paths.into_iter().take(30).collect();
+    bridge.emit("studio:selection", json!({ "count": body.count, "paths": paths }));
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -535,12 +556,28 @@ mod tests {
     }
 
     #[test]
-    fn pluginHeaderIsRequired() {
+    fn onlyTheMatchingTokenIsLetIn() {
+        let bridge = Bridge::new();
+        bridge.setToken("secret".into());
+
         let mut headers = HeaderMap::new();
-        assert!(pluginOnly(&headers).is_err());
-        headers.insert("x-jstudio", "1".parse().unwrap());
-        assert!(pluginOnly(&headers).is_ok());
+        assert!(pluginOnly(&bridge, &headers).is_err());
+
+        headers.insert("x-jstudio-token", "wrong".parse().unwrap());
+        assert!(pluginOnly(&bridge, &headers).is_err());
+
+        headers.insert("x-jstudio-token", "secret".parse().unwrap());
+        assert!(pluginOnly(&bridge, &headers).is_ok());
+
         headers.insert("origin", "http://evil.local".parse().unwrap());
-        assert!(pluginOnly(&headers).is_err());
+        assert!(pluginOnly(&bridge, &headers).is_err());
+    }
+
+    #[test]
+    fn noTokenMeansNoAccess() {
+        let bridge = Bridge::new();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-jstudio-token", "".parse().unwrap());
+        assert!(pluginOnly(&bridge, &headers).is_err());
     }
 }

@@ -10,6 +10,7 @@ import {
 } from '@/app/lib/ipc'
 import { play } from '@/app/lib/host'
 import { useStore, type SpoofStatus } from '@/app/lib/state'
+import { useDateFormat } from '@/app/ui/usageChart'
 import {
   spoofOptions,
   type AssetKind,
@@ -94,8 +95,8 @@ const tones: Record<SpoofStatus, 'ok' | 'warn' | 'danger' | 'accent' | 'neutral'
 
 const DAY = 86_400_000
 
-const clock = (value: number) =>
-  new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+const clock = (value: number, language: string) =>
+  new Date(value).toLocaleTimeString(language, { hour: '2-digit', minute: '2-digit' })
 
 function bucketOf(value: number): MessageKey {
   const age = Date.now() - value
@@ -108,6 +109,7 @@ function bucketOf(value: number): MessageKey {
 export function AssetsView() {
   const store = useStore()
   const { settings, status, plugin, spoofProgress, spoofPaused, spoofStatus, runs, t } = store
+  const stamp = useDateFormat()
 
   const [kind, setKindState] = useState<AssetKind>(settings.spoof.assetKind)
 
@@ -472,7 +474,7 @@ export function AssetsView() {
               ) : null}
               {selected.applied ? <Badge tone="accent">{t('build.applied')}</Badge> : null}
               {selected.target ? <Badge>{selected.target}</Badge> : null}
-              <span className="text-xs text-faint">{new Date(selected.startedAt).toLocaleString()}</span>
+              <span className="text-xs text-faint">{stamp(selected.startedAt)}</span>
             </div>
 
             <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-faint">
@@ -670,7 +672,8 @@ function RunGroup({
 
 function RunRow({ run, active, onOpen }: { run: RunRecord; active: boolean; onOpen: () => void }) {
   const store = useStore()
-  const { t } = store
+  const { settings, t } = store
+  const stamp = useDateFormat()
   const [at, setAt] = useState<Anchor | null>(null)
   const [renaming, setRenaming] = useState(false)
   const [confirming, setConfirming] = useState(false)
@@ -714,8 +717,8 @@ function RunRow({ run, active, onOpen }: { run: RunRecord; active: boolean; onOp
       >
         {run.pinned ? <Icon name="pin" className="size-3 shrink-0" /> : null}
         <span className="min-w-0 flex-1 truncate">{nameOf(run, t)}</span>
-        <span className="shrink-0 text-[11px] text-faint" title={new Date(run.startedAt).toLocaleString()}>
-          {clock(run.startedAt)}
+        <span className="shrink-0 text-[11px] text-faint" title={stamp(run.startedAt)}>
+          {clock(run.startedAt, settings.language)}
         </span>
       </button>
 
@@ -796,7 +799,6 @@ function SpoofSettings({ onClose }: { onClose: () => void }) {
   const options = settings.spoof
 
   const [groups, setGroups] = useState<{ id: string; name: string }[]>([])
-  const [loadedGroups, setLoadedGroups] = useState(false)
 
   useEffect(() => {
     let live = true
@@ -806,9 +808,6 @@ function SpoofSettings({ onClose }: { onClose: () => void }) {
         if (live) setGroups(list)
       })
       .catch(() => {})
-      .finally(() => {
-        if (live) setLoadedGroups(true)
-      })
 
     return () => {
       live = false
@@ -868,7 +867,7 @@ function SpoofSettings({ onClose }: { onClose: () => void }) {
             </div>
           </Field>
         ) : (
-          <Field label={t('spoof.target')} hint={loadedGroups ? undefined : t('spoof.checkingGroups')}>
+          <Field label={t('spoof.target')}>
             <Select
               value={options.groupId}
               onChange={(value) => patch({ groupId: value })}

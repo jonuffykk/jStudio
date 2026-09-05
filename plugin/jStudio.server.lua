@@ -5,13 +5,16 @@ local StudioService = game:GetService("StudioService")
 local Selection = game:GetService("Selection")
 local RunService = game:GetService("RunService")
 
-local PLUGIN_VERSION = "1.2.0"
+local PLUGIN_VERSION = "1.3.0"
+local TOKEN = "__JSTUDIO_TOKEN__"
 local FIRST_PORT = 8712
 local LAST_PORT = 8719
 local MAX_NODES = 4000
 local MAX_SOURCE = 60000
 local SCAN_BATCH = 40
 local IDLE_DELAY = 1
+local RETRY_DELAY = 3
+local MAX_POLL_MISSES = 3
 local KIND_PROPERTIES = {
 	animation = {
 		{ className = "Animation", properties = { "AnimationId" } },
@@ -127,18 +130,19 @@ local TREE_SERVICES = {
 }
 
 local toolbar = plugin:CreateToolbar("jStudio")
-local connectButton = toolbar:CreateButton("jStudio", "Connect this place to jStudio", "rbxassetid://79755648663792")
-local syncButton = toolbar:CreateButton("Sync tree", "Send the place tree to jStudio now", "rbxassetid://79755648663792")
-local scanButton = toolbar:CreateButton("Scan selection", "Scan the current selection for animations", "rbxassetid://79755648663792")
+local button = toolbar:CreateButton(
+	"jStudio",
+	"Connect, sync the place, or scan the selection when there is one",
+	"rbxassetid://79755648663792"
+)
 
-connectButton.ClickableWhenViewportHidden = true
-syncButton.ClickableWhenViewportHidden = true
-scanButton.ClickableWhenViewportHidden = true
+button.ClickableWhenViewportHidden = true
 
-local active = false
+local active = true
+local connected = false
 local port = FIRST_PORT
 local lastMappingToken = nil
-local pendingSelectionCount = -1
+local pendingSelectionCount = ""
 
 local function baseUrl()
 	return string.format("http://127.0.0.1:%d", port)
@@ -148,7 +152,11 @@ local function send(path, method, body)
 	local request = {
 		Url = baseUrl() .. path,
 		Method = method,
-		Headers = { ["x-jstudio"] = PLUGIN_VERSION, ["Content-Type"] = "application/json" },
+		Headers = {
+			["x-jstudio"] = PLUGIN_VERSION,
+			["x-jstudio-token"] = TOKEN,
+			["Content-Type"] = "application/json",
+		},
 	}
 	if body ~= nil then
 		request.Body = HttpService:JSONEncode(body)
@@ -789,6 +797,20 @@ end
 
 local function reportSelection()
 	local count = 0
+	local paths = {}
+
+	for index, instance in ipairs(Selection:Get()) do
+		if index > 30 then
+			break
+		end
+		local ok, full = pcall(function()
+			return instance:GetFullName()
+		end)
+		if ok then
+			table.insert(paths, full)
+		end
+	end
+
 	if #Selection:Get() > 0 then
 		local seen = {}
 		eachAssetReference(scanRoots(true), "animation", function(reference)
@@ -798,20 +820,26 @@ local function reportSelection()
 			end
 		end)
 	end
-	if count ~= pendingSelectionCount then
-		pendingSelectionCount = count
-		send("/selection", "POST", { count = count })
+
+	local token = table.concat(paths, "|") .. "#" .. count
+	if token ~= pendingSelectionCount then
+		pendingSelectionCount = token
+		send("/selection", "POST", { count = count, paths = paths })
 	end
 end
 
 local function loop()
+	local misses = 0
 	while active do
 		local work = send("/poll", "GET")
 		if not work then
-			if not findPort() then
-				task.wait(3)
+			misses += 1
+			if misses >= MAX_POLL_MISSES then
+				return
 			end
+			task.wait(RETRY_DELAY)
 		else
+			misses = 0
 			if work.job then
 				applyJob(work.job)
 			end
@@ -828,53 +856,63 @@ local function loop()
 	end
 end
 
-local function setActive(value)
-	active = value
-	connectButton:SetActive(active)
+local function paintButton()
+	button:SetActive(connected)
+end
 
-	if active then
-		if findPort() then
-			syncTree()
-			task.spawn(loop)
-		else
-			active = false
-			connectButton:SetActive(false)
-			warn("jStudio is not running, or it is not listening on 127.0.0.1")
+local function attach()
+	if connected then
+		return true
+	end
+	if not findPort() then
+		return false
+	end
+
+	connected = true
+	paintButton()
+	pendingSelectionCount = ""
+	syncTree()
+	return true
+end
+
+local function supervise()
+	while active do
+		if attach() then
+			loop()
+			connected = false
+			paintButton()
 		end
-	else
-		send("/goodbye", "POST", {})
+		if active then
+			task.wait(RETRY_DELAY)
+		end
 	end
 end
 
-connectButton.Click:Connect(function()
-	setActive(not active)
-end)
-
-syncButton.Click:Connect(function()
-	if active then
-		syncTree()
-	end
-end)
-
-scanButton.Click:Connect(function()
-	if active then
+button.Click:Connect(function()
+	if not connected then
+		task.spawn(attach)
+	elseif #Selection:Get() > 0 then
 		task.spawn(runScan, { selectedOnly = true, useInstanceNames = true })
+	else
+		task.spawn(syncTree)
 	end
 end)
 
 Selection.SelectionChanged:Connect(function()
-	if active then
+	if connected then
 		task.spawn(reportSelection)
 	end
 end)
 
 plugin.Unloading:Connect(function()
-	if active then
-		active = false
+	active = false
+	if connected then
+		connected = false
 		send("/goodbye", "POST", {})
 	end
 end)
 
 if not RunService:IsRunning() then
-	setActive(true)
+	paintButton()
+	task.spawn(supervise)
 end
