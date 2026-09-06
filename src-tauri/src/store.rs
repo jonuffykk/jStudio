@@ -272,10 +272,12 @@ pub fn loadImage(app: &AppHandle, name: &str) -> Option<String> {
         _ => return None,
     };
 
-    let bytes = std::fs::read(dataDir(app).ok()?.join("images").join(format!(
-        "{}.{extension}",
-        safeName(id)?
-    )))
+    let bytes = std::fs::read(
+        dataDir(app)
+            .ok()?
+            .join("images")
+            .join(format!("{}.{extension}", safeName(id)?)),
+    )
     .ok()?;
 
     use base64::Engine;

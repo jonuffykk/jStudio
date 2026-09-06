@@ -9,7 +9,7 @@ import { findProvider } from '@/app/lib/providers'
 import { promptParts } from '@/app/lib/prompt'
 import { useStore } from '@/app/lib/state'
 import { subagents } from '@/app/lib/subagents'
-import { slimDescription, slimSchema, studioTools } from '@/app/lib/tools'
+import { studioTools } from '@/app/lib/tools'
 import type { Action, Conversation } from '@/app/lib/schemas'
 import type { MessageKey } from '@/app/lib/i18n'
 import { Confirm, EmptyState, Icon, Skeleton } from '@/app/ui/primitives'
@@ -458,10 +458,12 @@ export function BuildView() {
       const known = useStore.getState().conversations.some((entry) => entry.id === id)
       const opener = history.find((entry) => entry.role === 'user')?.content ?? ''
 
+      /** The chat exists in the sidebar from the first turn; the name lands later. */
       if (!known && opener) {
+        persist(id, t('build.newChat'))
         void generateTitle(chatEndpoint, opener, (input, output) =>
           bank(id, chatModel, input, output, 'title')
-        ).then((title) => persist(id, title))
+        ).then((title) => persist(id, title || t('build.newChat')))
       }
 
       try {
@@ -927,20 +929,6 @@ export function BuildView() {
         className: tone[part.key] ?? 'bg-accent',
       })),
       {
-        key: 'build.sliceTools' as MessageKey,
-        chars: JSON.stringify([
-          ...studioTools,
-          ...mcp.flatMap((entry) =>
-            entry.tools.map((tool) => ({
-              name: tool.name,
-              description: slimDescription(tool.description),
-              parameters: slimSchema(tool.inputSchema),
-            }))
-          ),
-        ]).length,
-        className: 'bg-ok',
-      },
-      {
         key: 'build.sliceMessages' as MessageKey,
         chars: messages
           .filter((entry) => !entry.folded)
@@ -949,7 +937,7 @@ export function BuildView() {
       },
     ]
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes, truncated, messages, settings, mcp, placeReady])
+  }, [nodes, truncated, messages, settings, placeReady])
 
   const last = messages[messages.length - 1]
   const pending =
