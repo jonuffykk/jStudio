@@ -1,7 +1,6 @@
 <div align="center">
 
 <img src="public/logo.png" alt="jStudio" width="88" />
-
 # jStudio
 
 **AI pair programmer and asset pipeline for Roblox Studio.**
