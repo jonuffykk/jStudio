@@ -19,6 +19,7 @@ import {
   slimDescription,
   slimSchema,
   studioTools,
+  toolSize,
 } from '@/app/lib/tools'
 
 export type Approval = 'once' | 'always' | 'deny'
@@ -150,6 +151,12 @@ export async function* runAgent(input: AgentInput): AsyncGenerator<AgentEvent> {
     })),
   ]
 
+  /**
+   * What the tool catalogue costs on every request. It is the app's overhead,
+   * not the person's turn, so it is taken off what the ledger is told.
+   */
+  const toolWeight = toolSize(tools)
+
   const conversation: Message[] = [
     {
       role: 'system',
@@ -183,7 +190,11 @@ export async function* runAgent(input: AgentInput): AsyncGenerator<AgentEvent> {
         if (delta.type === 'reasoning') yield { type: 'reasoning', text: delta.text }
         else if (delta.type === 'notice') yield { type: 'notice', text: delta.text }
         else if (delta.type === 'usage')
-          yield { type: 'usage', inputTokens: delta.inputTokens, outputTokens: delta.outputTokens }
+          yield {
+            type: 'usage',
+            inputTokens: Math.max(0, delta.inputTokens - toolWeight),
+            outputTokens: delta.outputTokens,
+          }
         else if (delta.type === 'truncated') clipped = true
         else if (delta.type === 'text') {
           text += delta.text

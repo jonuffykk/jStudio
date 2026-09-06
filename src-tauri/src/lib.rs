@@ -91,7 +91,9 @@ fn pluginsDir() -> Result<std::path::PathBuf, String> {
 #[tauri::command]
 fn pluginStatus(app: AppHandle, state: tauri::State<AppState>) -> Value {
     let file = pluginsDir().ok().map(|dir| dir.join(PLUGIN_FILE));
-    let source = file.as_ref().and_then(|path| std::fs::read_to_string(path).ok());
+    let source = file
+        .as_ref()
+        .and_then(|path| std::fs::read_to_string(path).ok());
     let installed = source.is_some();
     let paired = source
         .as_deref()
@@ -119,7 +121,11 @@ fn bridgeToken(app: &AppHandle) -> String {
         }
     }
 
-    let token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+    let token = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
 
     let _ = store::writeJson(app, "bridge.json", &json!({ "token": token }));
     token
@@ -148,7 +154,8 @@ fn pluginInstall(app: AppHandle) -> Result<String, String> {
 
     let source = PLUGIN_SOURCE.replace("__JSTUDIO_TOKEN__", &bridgeToken(&app));
     let target = dir.join(PLUGIN_FILE);
-    std::fs::write(&target, source).map_err(|error| format!("Could not write the plugin: {error}"))?;
+    std::fs::write(&target, source)
+        .map_err(|error| format!("Could not write the plugin: {error}"))?;
     Ok(target.display().to_string())
 }
 
@@ -176,7 +183,6 @@ fn imageLoad(app: AppHandle, name: String) -> Option<String> {
 fn conversationsClear(app: AppHandle) -> Result<(), String> {
     store::clearConversations(&app)
 }
-
 
 #[tauri::command]
 fn settingsLoad(app: AppHandle) -> Value {

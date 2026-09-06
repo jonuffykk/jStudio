@@ -472,7 +472,10 @@ async fn reportSelection(
     bridge.touch();
     bridge.inner.lock().unwrap().selectionCount = body.count;
     let paths: Vec<String> = body.paths.into_iter().take(30).collect();
-    bridge.emit("studio:selection", json!({ "count": body.count, "paths": paths }));
+    bridge.emit(
+        "studio:selection",
+        json!({ "count": body.count, "paths": paths }),
+    );
     Ok(Json(json!({ "ok": true })))
 }
 

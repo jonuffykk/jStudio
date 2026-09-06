@@ -204,7 +204,7 @@ describe('usage chart', () => {
   })
 
   it('counts today as the calendar day, not the last 24 hours', () => {
-    const evening = Date.parse('2026-09-04T23:30:00-03:00')
+    const evening = new Date(2026, 8, 4, 23, 30).getTime()
     const day = dayKey(evening)
 
     assert.equal(day, '2026-09-04')
@@ -215,7 +215,7 @@ describe('usage chart', () => {
     assert.equal(today.input, 100)
     assert.equal(today.runs, 2)
     assert.equal(totalsOver(ledger, 7, evening).input, 100)
-    assert.equal(totalsOver(ledger, 1, Date.parse('2026-09-06T10:00:00-03:00')).input, 0)
+    assert.equal(totalsOver(ledger, 1, new Date(2026, 8, 6, 10, 0).getTime()).input, 0)
   })
 
   it('shortens tokens the way a person reads them', () => {
